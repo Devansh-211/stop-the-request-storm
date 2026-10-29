@@ -2,6 +2,7 @@
 Dynamic defense configuration, tier multipliers, key registry, and endpoint cost/cache map.
 """
 
+import os
 from typing import Dict, Optional, Set
 from pydantic import BaseModel, Field
 
@@ -36,10 +37,13 @@ CACHEABLE_ENDPOINTS: Set[str] = {
 EXEMPT_PATHS: Set[str] = {
     "/",
     "/health",
+    "/session/new",
+    "/session/current",
     "/control/state",
     "/control/config",
     "/control/metrics",
     "/control/simulate/stop",
+    "/control/admin/sessions",
 }
 
 
@@ -81,5 +85,8 @@ class DefenseConfig(BaseModel):
     trust_forwarded_for: bool = Field(default=True, description="Trust X-Forwarded-For when client IP is loopback/trusted")
 
 
-# Singleton defense configuration initialized with defaults
+# Default defense configuration template
+DEFAULT_DEFENSE_CONFIG = DefenseConfig()
+
+# Global default config fallback for backwards compatibility
 ACTIVE_CONFIG = DefenseConfig()

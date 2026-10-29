@@ -1,14 +1,16 @@
 """
 Pure ASGI Shield Middleware.
 Handles:
+- Per-Session sandbox resolution (from X-Session-Id header or storm_session cookie)
 - Exempt path bypassing
-- Client identity resolution (API Key registry fallback to IP)
-- Adaptive Storm Gate & Global upstream admission cap
-- Limiter strategy execution (Token Bucket / Sliding Window / Leaky Bucket)
+- Client identity resolution (API Key registry fallback to IP, namespaced by session)
+- Adaptive Storm Gate & Global upstream admission cap (per session)
+- Limiter strategy execution (Token Bucket / Sliding Window / Leaky Bucket per session)
 - Queue shaper awaiting
-- Graceful degradation (Stale-While-Revalidate)
+- Graceful degradation (Stale-While-Revalidate per session)
 - De facto and RFC 9110 rate limit headers
-- Telemetry & latency recording
+- Telemetry & latency recording (per session)
+- Cookie injection for new/refreshed sessions
 """
 
 import os
@@ -21,7 +23,7 @@ from typing import Dict, Any, Optional, Tuple, Callable
 from starlette.types import ASGIApp, Scope, Receive, Send
 
 from config import (
-    ACTIVE_CONFIG,
+    DEFAULT_DEFENSE_CONFIG,
     TierMultiplier,
     DEMO_KEY_REGISTRY,
     ENDPOINT_COST_MAP,
@@ -30,32 +32,19 @@ from config import (
 )
 from storage.base import BaseStorage
 from limiters.base import RateLimiterStrategy, Decision
-from limiters.token_bucket import TokenBucketLimiter
-from limiters.sliding_window import SlidingWindowLimiter
-from limiters.leaky_bucket import LeakyBucketLimiter
-from cache import DEGRADATION_CACHE
-from metrics import METRICS
+from session_manager import SESSION_MANAGER, SessionState
 
 
 class ShieldMiddleware:
     """
     Pure ASGI middleware for high-performance non-blocking rate limiting and protection.
+    Resolves request to its isolated SessionState sandbox.
     Does NOT inherit from BaseHTTPMiddleware.
     """
 
-    def __init__(self, app: ASGIApp, store: BaseStorage):
+    def __init__(self, app: ASGIApp, store: Optional[BaseStorage] = None):
         self.app = app
         self.store = store
-        self.tb_limiter = TokenBucketLimiter(store)
-        self.sw_limiter = SlidingWindowLimiter(store)
-        self.lb_limiter = LeakyBucketLimiter(store)
-
-    def _get_limiter(self, algorithm: str) -> RateLimiterStrategy:
-        if algorithm == "sliding_window":
-            return self.sw_limiter
-        elif algorithm == "leaky_bucket":
-            return self.lb_limiter
-        return self.tb_limiter
 
     def _resolve_identity_and_tier(self, headers: Dict[str, str], client_ip: str) -> Tuple[str, str]:
         """
@@ -80,24 +69,41 @@ class ShieldMiddleware:
         client = scope.get("client")
         socket_ip = client[0] if client else "127.0.0.1"
 
-        if ACTIVE_CONFIG.trust_forwarded_for:
-            # Trusted if running on Vercel, or socket IP is loopback or local private
-            is_vercel = os.getenv("VERCEL") == "1"
-            is_local = (
-                socket_ip in ("127.0.0.1", "::1", "localhost")
-                or socket_ip.startswith("10.")
-                or socket_ip.startswith("192.168.")
-                or socket_ip.startswith("172.")
-            )
-            if is_vercel or is_local or ACTIVE_CONFIG.trust_forwarded_for:
-                xff = headers.get("x-forwarded-for")
-                if xff:
-                    # Pick left-most entry (origin client IP)
-                    left_ip = xff.split(",")[0].strip()
-                    if left_ip:
-                        return left_ip
+        # Check if trusted proxy or Vercel environment
+        is_vercel = os.getenv("VERCEL") == "1"
+        is_local = (
+            socket_ip in ("127.0.0.1", "::1", "localhost")
+            or socket_ip.startswith("10.")
+            or socket_ip.startswith("192.168.")
+            or socket_ip.startswith("172.")
+        )
+        if is_vercel or is_local:
+            xff = headers.get("x-forwarded-for")
+            if xff:
+                left_ip = xff.split(",")[0].strip()
+                if left_ip:
+                    return left_ip
 
         return socket_ip
+
+    def _extract_session_id(self, headers: Dict[str, str]) -> Optional[str]:
+        """
+        Extract session ID from X-Session-Id header or storm_session cookie.
+        """
+        # 1. Header (used by Simulator, API clients, tests)
+        hdr_id = headers.get("x-session-id")
+        if hdr_id:
+            return hdr_id.strip()
+
+        # 2. Cookie (used by browser)
+        cookie_hdr = headers.get("cookie", "")
+        if cookie_hdr:
+            for part in cookie_hdr.split(";"):
+                if "=" in part:
+                    k, v = part.strip().split("=", 1)
+                    if k.strip() == "storm_session":
+                        return v.strip()
+        return None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -117,48 +123,87 @@ class ShieldMiddleware:
                 pass
 
         sim_class = headers.get("x-sim-class", "none")
+        client_ip = self._extract_client_ip(scope, headers)
+        requested_sid = self._extract_session_id(headers)
+
+        # Resolve or create isolated session sandbox
+        session_state, is_new_session = await SESSION_MANAGER.get_or_create_session(
+            requested_id=requested_sid,
+            client_ip=client_ip,
+            default_config=DEFAULT_DEFENSE_CONFIG
+        )
+
+        # Store session in scope for downstream endpoints
+        scope["session_id"] = session_state.session_id
+        scope["session_state"] = session_state
+        scope["is_new_session"] = is_new_session
+
+        cfg = session_state.config
+
+        # Helper to inject session cookie on response start
+        cookie_to_set = None
+        if is_new_session or not headers.get("cookie") or "storm_session=" not in headers.get("cookie", ""):
+            # Set HttpOnly, SameSite=Lax cookie (add Secure when served over HTTPS)
+            is_https = scope.get("scheme") == "https" or headers.get("x-forwarded-proto") == "https"
+            secure_flag = "; Secure" if is_https else ""
+            cookie_to_set = (
+                f"storm_session={session_state.session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{secure_flag}"
+            ).encode("latin1")
 
         # 1. Exempt path check: never throttled
         if is_exempt_path(path):
-            await self.app(scope, receive, send)
+            async def _exempt_send(message: Dict[str, Any]):
+                if message["type"] == "http.response.start":
+                    raw_hdrs = list(message.get("headers", []))
+                    if cookie_to_set:
+                        raw_hdrs.append((b"set-cookie", cookie_to_set))
+                    raw_hdrs.append((b"x-session-id", session_state.session_id.encode("latin1")))
+                    message["headers"] = raw_hdrs
+                await send(message)
+
+            await self.app(scope, receive, _exempt_send)
             return
 
-        # 2. Extract client IP and Identity
-        client_ip = self._extract_client_ip(scope, headers)
-        identity, tier = self._resolve_identity_and_tier(headers, client_ip)
+        # 2. Extract Identity & Tier
+        raw_identity, tier = self._resolve_identity_and_tier(headers, client_ip)
+        # Namespace identity by session so spoofed IPs in Session A never consume Session B's buckets
+        session_scoped_identity = f"{session_state.session_id}:{raw_identity}"
 
         # 3. Check Master Shield switch
-        if not ACTIVE_CONFIG.shield_enabled:
+        if not cfg.shield_enabled:
             # Shield OFF: forward untouched, record metrics
-            async def _send_wrapper(message: Dict[str, Any]):
+            async def _send_unshielded(message: Dict[str, Any]):
                 if message["type"] == "http.response.start":
                     latency_ms = (time.time() - req_start_time) * 1000.0
                     status_code = message.get("status", 200)
-                    METRICS.record_request(
+                    session_state.metrics.record_request(
                         status="accepted" if status_code < 400 else "blocked",
                         latency_ms=latency_ms,
-                        identity=identity,
+                        identity=raw_identity,
                         sim_class=sim_class
                     )
+                    raw_hdrs = list(message.get("headers", []))
+                    if cookie_to_set:
+                        raw_hdrs.append((b"set-cookie", cookie_to_set))
+                    raw_hdrs.append((b"x-session-id", session_state.session_id.encode("latin1")))
+                    message["headers"] = raw_hdrs
                 await send(message)
 
-            await self.app(scope, receive, _send_wrapper)
+            await self.app(scope, receive, _send_unshielded)
             return
 
-        # 4. Storm Detection check
-        is_storm_mode = METRICS.evaluate_storm_mode(
-            enabled=ACTIVE_CONFIG.storm_mode_enabled,
-            rps_threshold=ACTIVE_CONFIG.storm_rps_threshold,
-            ip_threshold=ACTIVE_CONFIG.storm_ip_threshold
+        # 4. Storm Detection check (isolated per session)
+        is_storm_mode = session_state.metrics.evaluate_storm_mode(
+            enabled=cfg.storm_mode_enabled,
+            rps_threshold=cfg.storm_rps_threshold,
+            ip_threshold=cfg.storm_ip_threshold
         )
 
-        # 5. Global Upstream Admission Cap Gate
-        # Enforced with atomic token bucket on global key
-        # In storm mode, reserve slots for paying tiers
-        global_cap = ACTIVE_CONFIG.max_upstream_rps
+        # 5. Global Upstream Admission Cap Gate (per session)
+        global_cap = cfg.max_upstream_rps
         global_cost = 1.0
-        global_allowed, _, _ = await self.store.token_bucket_consume(
-            key="global:upstream:cap",
+        global_allowed, _, _ = await session_state.store.token_bucket_consume(
+            key=f"session:{session_state.session_id}:global_cap",
             capacity=global_cap,
             refill_rate=global_cap,
             cost=global_cost
@@ -173,7 +218,7 @@ class ShieldMiddleware:
                     send=send,
                     method=method,
                     path=path,
-                    identity=identity,
+                    identity=raw_identity,
                     sim_class=sim_class,
                     decision=Decision(
                         allowed=False,
@@ -184,69 +229,75 @@ class ShieldMiddleware:
                         retry_after_ms=1000.0,
                         reason="GLOBAL_UPSTREAM_CAP_EXCEEDED"
                     ),
-                    req_start_time=req_start_time
+                    req_start_time=req_start_time,
+                    session_state=session_state,
+                    cookie_to_set=cookie_to_set
                 )
                 return
 
-        # 6. Selected Limiter Strategy & Tier Multipliers
+        # 6. Limiter Strategy & Tier Multipliers
         endpoint_key = f"{method} {path}"
         endpoint_cost = ENDPOINT_COST_MAP.get(endpoint_key, 1)
 
-        # Tier multiplier
         multiplier = getattr(TierMultiplier, tier, 1.0)
-        eff_capacity = ACTIVE_CONFIG.base_capacity * multiplier
-        eff_rate = ACTIVE_CONFIG.base_refill_rate * multiplier
+        eff_capacity = cfg.base_capacity * multiplier
+        eff_rate = cfg.base_refill_rate * multiplier
 
-        # Tighten anonymous/FREE limits in storm mode
         if is_storm_mode and tier == "FREE":
-            eff_capacity = max(1.0, eff_capacity * ACTIVE_CONFIG.storm_tighten_factor)
-            eff_rate = max(0.1, eff_rate * ACTIVE_CONFIG.storm_tighten_factor)
+            eff_capacity = max(1.0, eff_capacity * cfg.storm_tighten_factor)
+            eff_rate = max(0.1, eff_rate * cfg.storm_tighten_factor)
 
-        limiter = self._get_limiter(ACTIVE_CONFIG.algorithm)
+        if cfg.algorithm == "sliding_window":
+            limiter = session_state.sw_limiter
+        elif cfg.algorithm == "leaky_bucket":
+            limiter = session_state.lb_limiter
+        else:
+            limiter = session_state.tb_limiter
+
         decision = await limiter.check(
-            identity=identity,
+            identity=session_scoped_identity,
             endpoint_cost=endpoint_cost,
             capacity=eff_capacity,
             rate=eff_rate,
-            window_seconds=ACTIVE_CONFIG.window_seconds
+            window_seconds=cfg.window_seconds
         )
 
         # 7. Decision Routing: ALLOW / QUEUED / DENY
         if decision.allowed:
-            # Check if leaky bucket scheduled a queue delay
             if decision.queued_delay_ms > 0:
                 delay_sec = decision.queued_delay_ms / 1000.0
-                # Await slot OUTSIDE of any lock before forwarding
                 await asyncio.sleep(delay_sec)
                 status_metric = "queued"
             else:
                 status_metric = "accepted"
 
-            # Intercept response to inject rate limit headers and cache successful reads
             await self._forward_and_respond(
                 scope=scope,
                 receive=receive,
                 send=send,
                 method=method,
                 path=path,
-                identity=identity,
+                identity=raw_identity,
                 sim_class=sim_class,
                 decision=decision,
                 status_metric=status_metric,
-                req_start_time=req_start_time
+                req_start_time=req_start_time,
+                session_state=session_state,
+                cookie_to_set=cookie_to_set
             )
         else:
-            # Throttled: Attempt graceful degradation or respond with 429
             await self._handle_throttle(
                 scope=scope,
                 receive=receive,
                 send=send,
                 method=method,
                 path=path,
-                identity=identity,
+                identity=raw_identity,
                 sim_class=sim_class,
                 decision=decision,
-                req_start_time=req_start_time
+                req_start_time=req_start_time,
+                session_state=session_state,
+                cookie_to_set=cookie_to_set
             )
 
     async def _forward_and_respond(
@@ -260,10 +311,12 @@ class ShieldMiddleware:
         sim_class: str,
         decision: Decision,
         status_metric: str,
-        req_start_time: float
+        req_start_time: float,
+        session_state: SessionState,
+        cookie_to_set: Optional[bytes]
     ) -> None:
         """
-        Forward request to upstream app, add rate limit headers, and capture read responses for caching.
+        Forward request to upstream app, add rate limit headers, and capture read responses for session cache.
         """
         endpoint_key = f"{method} {path}"
         is_cacheable = (endpoint_key in CACHEABLE_ENDPOINTS) and (method in ("GET", "HEAD"))
@@ -277,7 +330,6 @@ class ShieldMiddleware:
                 captured_status = message.get("status", 200)
                 raw_hdrs = list(message.get("headers", []))
 
-                # Inject RateLimit headers
                 limit_hdr = str(int(decision.limit)).encode("latin1")
                 rem_hdr = str(max(0, int(decision.remaining))).encode("latin1")
                 reset_sec = max(1, int(math.ceil(decision.reset_after_ms / 1000.0)))
@@ -286,6 +338,9 @@ class ShieldMiddleware:
                 raw_hdrs.append((b"x-ratelimit-limit", limit_hdr))
                 raw_hdrs.append((b"x-ratelimit-remaining", rem_hdr))
                 raw_hdrs.append((b"x-ratelimit-reset", reset_hdr))
+                raw_hdrs.append((b"x-session-id", session_state.session_id.encode("latin1")))
+                if cookie_to_set:
+                    raw_hdrs.append((b"set-cookie", cookie_to_set))
 
                 message["headers"] = raw_hdrs
 
@@ -293,7 +348,7 @@ class ShieldMiddleware:
                     captured_headers[k.decode("latin1")] = v.decode("latin1")
 
                 latency_ms = (time.time() - req_start_time) * 1000.0
-                METRICS.record_request(
+                session_state.metrics.record_request(
                     status=status_metric,
                     latency_ms=latency_ms,
                     identity=identity,
@@ -309,13 +364,13 @@ class ShieldMiddleware:
 
         await self.app(scope, receive, _intercept_send)
 
-        # Populate cache if read endpoint was successful
+        # Populate session cache if read endpoint was successful
         if is_cacheable and captured_status == 200:
             query = scope.get("query_string", b"").decode("latin1")
-            cache_key = DEGRADATION_CACHE.build_key(method, path, query)
+            cache_key = session_state.cache.build_key(method, path, query)
             full_body = b"".join(captured_chunks)
             if full_body:
-                await DEGRADATION_CACHE.set(
+                await session_state.cache.set(
                     key=cache_key,
                     status_code=captured_status,
                     headers=captured_headers,
@@ -332,7 +387,9 @@ class ShieldMiddleware:
         identity: str,
         sim_class: str,
         decision: Decision,
-        req_start_time: float
+        req_start_time: float,
+        session_state: SessionState,
+        cookie_to_set: Optional[bytes]
     ) -> None:
         """
         Handle throttled requests:
@@ -340,31 +397,27 @@ class ShieldMiddleware:
         - If write or cache miss -> return status 429 with jittered Retry-After.
         """
         endpoint_key = f"{method} {path}"
+        cfg = session_state.config
         is_read_cacheable = (
-            ACTIVE_CONFIG.degradation_mode
+            cfg.degradation_mode
             and (endpoint_key in CACHEABLE_ENDPOINTS)
             and (method in ("GET", "HEAD"))
         )
 
         if is_read_cacheable:
             query = scope.get("query_string", b"").decode("latin1")
-            cache_key = DEGRADATION_CACHE.build_key(method, path, query)
-            entry, state = await DEGRADATION_CACHE.get(cache_key)
+            cache_key = session_state.cache.build_key(method, path, query)
+            entry, state = await session_state.cache.get(cache_key)
 
             if entry is not None:
                 # Stale-While-Revalidate: serve cached entry with status 200
                 latency_ms = (time.time() - req_start_time) * 1000.0
-                METRICS.record_request(
+                session_state.metrics.record_request(
                     status="degraded",
                     latency_ms=latency_ms,
                     identity=identity,
                     sim_class=sim_class
                 )
-
-                # Background single-flight revalidation if stale
-                if state == "stale":
-                    # Single-flight revalidation guarded
-                    pass
 
                 response_headers = [
                     (b"content-type", b"application/json"),
@@ -373,7 +426,10 @@ class ShieldMiddleware:
                     (b"x-ratelimit-limit", str(int(decision.limit)).encode("latin1")),
                     (b"x-ratelimit-remaining", b"0"),
                     (b"x-ratelimit-reset", str(max(1, int(math.ceil(decision.reset_after_ms / 1000.0)))).encode("latin1")),
+                    (b"x-session-id", session_state.session_id.encode("latin1")),
                 ]
+                if cookie_to_set:
+                    response_headers.append((b"set-cookie", cookie_to_set))
 
                 await send({
                     "type": "http.response.start",
@@ -389,7 +445,7 @@ class ShieldMiddleware:
 
         # Write endpoint, degradation disabled, or cache miss -> 429 Too Many Requests
         latency_ms = (time.time() - req_start_time) * 1000.0
-        METRICS.record_request(
+        session_state.metrics.record_request(
             status="blocked",
             latency_ms=latency_ms,
             identity=identity,
@@ -397,7 +453,7 @@ class ShieldMiddleware:
         )
 
         base_retry_sec = max(1.0, decision.retry_after_ms / 1000.0)
-        jitter = random.uniform(0.0, ACTIVE_CONFIG.retry_after_jitter_max)
+        jitter = random.uniform(0.0, cfg.retry_after_jitter_max)
         retry_after_int = int(math.ceil(base_retry_sec + jitter))
         reset_sec = max(1, int(math.ceil(decision.reset_after_ms / 1000.0)))
 
@@ -406,7 +462,8 @@ class ShieldMiddleware:
             "message": "Rate limit exceeded. Storm shield active.",
             "reason": decision.reason,
             "retry_after_seconds": retry_after_int,
-            "degraded_mode": "Cache-Miss" if is_read_cacheable else "Disabled"
+            "degraded_mode": "Cache-Miss" if is_read_cacheable else "Disabled",
+            "session_id": session_state.session_id
         }).encode("utf-8")
 
         headers_429 = [
@@ -415,7 +472,10 @@ class ShieldMiddleware:
             (b"x-ratelimit-limit", str(int(decision.limit)).encode("latin1")),
             (b"x-ratelimit-remaining", b"0"),
             (b"x-ratelimit-reset", str(reset_sec).encode("latin1")),
+            (b"x-session-id", session_state.session_id.encode("latin1")),
         ]
+        if cookie_to_set:
+            headers_429.append((b"set-cookie", cookie_to_set))
         if is_read_cacheable:
             headers_429.append((b"x-degraded-mode", b"Cache-Miss"))
 

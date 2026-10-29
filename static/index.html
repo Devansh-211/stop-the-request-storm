@@ -3,41 +3,32 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WAR ROOM // API Under Attack — Stop The Request Storm</title>
-  
+  <title>API Under Attack — Stop the Request Storm (War Room)</title>
   <!-- Tailwind CSS CDN -->
-  <script src="https://cdn.tailwindcss.com/3.4.1"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
   <!-- Chart.js CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-
-  <!-- Fallback & Dark Cyberpunk Styling -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    :root {
-      --bg-dark: #0a0a0f;
-      --card-bg: #12121c;
-      --healthy: #00ff88;
-      --blocked: #ff3366;
-      --degraded: #00d4ff;
-      --queued: #ffb800;
-      --border-dark: #1e1e2f;
-    }
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Orbitron:wght@600;900&display=swap');
+    
     body {
-      background-color: var(--bg-dark);
+      background-color: #0a0a0f;
       color: #e2e8f0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .orbitron {
+      font-family: 'Orbitron', sans-serif;
     }
     .panel {
-      background: rgba(18, 18, 28, 0.85);
-      border: 1px solid var(--border-dark);
-      backdrop-filter: blur(12px);
+      background: #11111a;
+      border: 1px solid #1e1e2f;
+      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.7);
     }
     .neon-border-green {
-      box-shadow: 0 0 15px rgba(0, 255, 136, 0.25);
-      border-color: #00ff88;
+      box-shadow: 0 0 15px rgba(0, 255, 136, 0.2);
     }
     .neon-border-red {
-      box-shadow: 0 0 15px rgba(255, 51, 102, 0.35);
-      border-color: #ff3366;
+      box-shadow: 0 0 15px rgba(255, 51, 102, 0.3);
     }
     /* Custom Scrollbars */
     ::-webkit-scrollbar {
@@ -51,12 +42,24 @@
       background: #27273a;
       border-radius: 3px;
     }
+    .toast-enter {
+      transform: translateY(-20px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .toast-visible {
+      transform: translateY(0);
+      opacity: 1;
+    }
   </style>
 </head>
-<body class="min-h-screen flex flex-col p-4 md:p-6 select-none">
+<body class="min-h-screen flex flex-col p-4 md:p-6 select-none relative">
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
 
   <!-- Header -->
-  <header class="flex flex-wrap items-center justify-between pb-4 border-b border-[#1e1e2f] mb-6">
+  <header class="flex flex-wrap items-center justify-between pb-4 border-b border-[#1e1e2f] mb-6 gap-4">
     <div class="flex items-center space-x-3">
       <div class="w-4 h-4 rounded-full bg-[#00ff88] animate-pulse"></div>
       <h1 class="text-xl md:text-2xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-[#00ff88] via-[#00d4ff] to-[#ff3366]">
@@ -65,7 +68,16 @@
       <span class="text-xs px-2 py-0.5 rounded bg-[#1e1e2f] text-gray-400 font-mono">TEAM 9 GATEWAY</span>
     </div>
     
-    <div class="flex items-center space-x-6 text-sm">
+    <div class="flex flex-wrap items-center gap-4 text-sm">
+      <!-- Session Badge & New Session Action -->
+      <div class="flex items-center space-x-2 bg-[#151522] px-3 py-1.5 rounded-lg border border-gray-800">
+        <span class="text-gray-400 text-xs">SANDBOX:</span>
+        <span id="badge-session-id" class="font-mono text-xs text-[#00ff88] font-bold">...</span>
+        <button onclick="createNewSession()" title="Reset sandbox and generate a fresh isolated session" class="ml-2 text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-gray-800 hover:bg-[#00ff88] hover:text-black text-gray-300 transition">
+          + NEW SESSION
+        </button>
+      </div>
+
       <div class="flex items-center space-x-2">
         <span class="text-gray-400">ENGINE:</span>
         <span id="badge-store" class="px-2 py-0.5 rounded text-xs font-bold uppercase bg-blue-950 text-[#00d4ff] border border-blue-800">
@@ -99,7 +111,7 @@
         </div>
 
         <p class="text-xs text-gray-400 mb-5 leading-relaxed">
-          Inject synthetic traffic flows into the gateway to stress test limiter strategies, concurrency bottlenecks, and degraded fallbacks.
+          Inject synthetic traffic flows into your isolated sandbox to test limiter strategies, concurrency bottlenecks, and graceful degraded fallbacks.
         </p>
 
         <div class="space-y-3">
@@ -144,7 +156,7 @@
       </div>
     </section>
 
-    <!-- CENTER PANEL: Live Telemetry & Charts (6 cols) -->
+    <!-- CENTER PANEL: Real-time Telemetry & Time Series Chart (6 cols) -->
     <section class="lg:col-span-6 flex flex-col space-y-6">
       
       <!-- Key Metric Tiles -->
@@ -178,168 +190,189 @@
             <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#ff3366] mr-1"></span> Blocked</span>
           </div>
         </div>
-        <div class="flex-grow min-h-[220px] relative">
+        <div class="relative flex-grow min-h-[260px] w-full">
           <canvas id="trafficChart"></canvas>
         </div>
       </div>
 
-      <!-- Bottom split: Top Blocked + System Diagnostics -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="panel rounded-xl p-4">
-          <div class="text-xs font-bold tracking-wider text-gray-400 uppercase mb-3">Top Blocked Targets</div>
-          <div id="top-blocked-list" class="space-y-1.5 text-xs text-gray-400 max-h-24 overflow-y-auto">
-            <div class="text-gray-600 italic text-[11px]">No active blocks recorded.</div>
-          </div>
+      <!-- Secondary Telemetry Meters -->
+      <div class="grid grid-cols-3 gap-3">
+        <div class="panel rounded-xl p-3 text-center">
+          <div class="text-[10px] uppercase text-gray-500 font-bold">p50 Latency</div>
+          <div id="stat-p50" class="text-lg font-bold text-gray-300 mt-0.5">0ms</div>
         </div>
-
-        <div class="panel rounded-xl p-4 flex flex-col justify-between">
-          <div class="text-xs font-bold tracking-wider text-gray-400 uppercase mb-2">Defense System Status</div>
-          <div class="text-xs space-y-1 text-gray-300">
-            <div class="flex justify-between"><span>Active Buckets:</span> <span id="stat-buckets" class="font-bold text-gray-100">0</span></div>
-            <div class="flex justify-between"><span>p50 Latency:</span> <span id="stat-p50" class="font-bold text-gray-100">0ms</span></div>
-            <div class="flex justify-between"><span>Upstream Cap:</span> <span id="stat-cap-val" class="font-bold text-gray-100">60 RPS</span></div>
-          </div>
+        <div class="panel rounded-xl p-3 text-center">
+          <div class="text-[10px] uppercase text-gray-500 font-bold">Active Buckets</div>
+          <div id="stat-buckets" class="text-lg font-bold text-gray-300 mt-0.5">0</div>
+        </div>
+        <div class="panel rounded-xl p-3 text-center">
+          <div class="text-[10px] uppercase text-gray-500 font-bold">Upstream Cap</div>
+          <div id="stat-cap-val" class="text-lg font-bold text-gray-300 mt-0.5">60 RPS</div>
         </div>
       </div>
-
     </section>
 
-    <!-- RIGHT PANEL: Defense Controller (3 cols) -->
+    <!-- RIGHT PANEL: Live Defense Controls (3 cols) -->
     <section class="lg:col-span-3 panel rounded-xl p-5 flex flex-col justify-between">
-      <div>
-        <div class="flex items-center justify-between mb-4 border-b border-[#1e1e2f] pb-2">
-          <h2 class="text-sm font-bold tracking-wider text-gray-300 uppercase">🛡️ Defense Controller</h2>
-          <span class="text-[10px] text-gray-500 font-mono">LIVE TUNING</span>
+      <div class="space-y-5">
+        <div class="flex items-center justify-between border-b border-[#1e1e2f] pb-2">
+          <h2 class="text-sm font-bold tracking-wider text-gray-300 uppercase">🛡️ Defense Tuning</h2>
+          <span class="text-[10px] text-gray-500 uppercase">Live Hot-Reload</span>
         </div>
 
-        <!-- Master Switch -->
-        <div class="mb-5">
-          <label class="text-xs font-bold text-gray-300 block mb-2 uppercase">Master Shield Switch</label>
+        <!-- Master Shield Switch -->
+        <div>
           <button id="btn-toggle-shield" onclick="toggleShield()" class="w-full py-3 rounded-lg font-black tracking-widest text-sm transition uppercase bg-emerald-950 text-[#00ff88] border border-[#00ff88] neon-border-green">
             SHIELD ACTIVE
           </button>
         </div>
 
-        <!-- Algorithm Selector -->
-        <div class="mb-5">
-          <label class="text-xs font-bold text-gray-300 block mb-2 uppercase">Limiter Strategy</label>
-          <select id="sel-algo" onchange="updateDefenseParam('algorithm', this.value)" class="w-full py-2 px-3 rounded bg-[#151522] border border-[#1e1e2f] text-xs text-gray-200 focus:outline-none focus:border-[#00ff88]">
+        <!-- Algorithm Select -->
+        <div>
+          <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Algorithm</label>
+          <select id="sel-algo" onchange="updateDefenseParam('algorithm', this.value)" class="w-full bg-[#151522] border border-gray-800 rounded px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-[#00d4ff]">
             <option value="token_bucket">Token Bucket (Burst & Refill)</option>
             <option value="sliding_window">Sliding Window Counter</option>
-            <option value="leaky_bucket">Leaky Bucket / Queue Shaper</option>
+            <option value="leaky_bucket">Leaky Bucket (Queue Shaper)</option>
           </select>
         </div>
 
-        <!-- Sliders -->
-        <div class="space-y-4 mb-5">
-          <div>
-            <div class="flex justify-between text-xs mb-1">
-              <span class="text-gray-400">Base Capacity:</span>
-              <span id="lbl-capacity" class="font-bold text-[#00ff88]">10</span>
-            </div>
-            <input type="range" id="slider-capacity" min="2" max="100" value="10" oninput="onSliderChange('base_capacity', this.value, 'lbl-capacity')" class="w-full accent-[#00ff88]">
+        <!-- Base Capacity Slider -->
+        <div>
+          <div class="flex justify-between text-xs mb-1">
+            <span class="text-gray-400 uppercase">Base Capacity</span>
+            <span id="lbl-capacity" class="font-bold text-gray-200">10</span>
           </div>
-
-          <div>
-            <div class="flex justify-between text-xs mb-1">
-              <span class="text-gray-400">Base Refill/Leak Rate (RPS):</span>
-              <span id="lbl-refill" class="font-bold text-[#00ff88]">1.0</span>
-            </div>
-            <input type="range" id="slider-refill" min="0.2" max="50" step="0.2" value="1.0" oninput="onSliderChange('base_refill_rate', this.value, 'lbl-refill')" class="w-full accent-[#00ff88]">
-          </div>
-
-          <div>
-            <div class="flex justify-between text-xs mb-1">
-              <span class="text-gray-400">Max Upstream Cap (RPS):</span>
-              <span id="lbl-cap" class="font-bold text-[#00ff88]">60</span>
-            </div>
-            <input type="range" id="slider-cap" min="10" max="300" value="60" oninput="onSliderChange('max_upstream_rps', this.value, 'lbl-cap')" class="w-full accent-[#00ff88]">
-          </div>
+          <input id="slider-capacity" type="range" min="1" max="100" value="10" oninput="onSliderChange('base_capacity', this.value, 'lbl-capacity')" class="w-full accent-[#00ff88]">
         </div>
 
-        <!-- Toggles -->
-        <div class="space-y-3 pt-3 border-t border-[#1e1e2f]">
-          <label class="flex items-center justify-between text-xs cursor-pointer">
-            <span class="text-gray-300">Graceful Degradation (SWR)</span>
-            <input type="checkbox" id="chk-degradation" onchange="updateDefenseParam('degradation_mode', this.checked)" class="accent-[#00d4ff] w-4 h-4 rounded" checked>
-          </label>
-
-          <label class="flex items-center justify-between text-xs cursor-pointer">
-            <span class="text-gray-300">Adaptive Storm Mode</span>
-            <input type="checkbox" id="chk-storm" onchange="updateDefenseParam('storm_mode_enabled', this.checked)" class="accent-[#ff3366] w-4 h-4 rounded" checked>
-          </label>
+        <!-- Base Refill Rate Slider -->
+        <div>
+          <div class="flex justify-between text-xs mb-1">
+            <span class="text-gray-400 uppercase">Refill Rate / Leak Rate</span>
+            <span id="lbl-refill" class="font-bold text-gray-200">1</span>
+          </div>
+          <input id="slider-refill" type="range" min="0.5" max="50" step="0.5" value="1" oninput="onSliderChange('base_refill_rate', this.value, 'lbl-refill')" class="w-full accent-[#00d4ff]">
         </div>
 
+        <!-- Global Upstream Cap Slider -->
+        <div>
+          <div class="flex justify-between text-xs mb-1">
+            <span class="text-gray-400 uppercase">Global Admission Cap (RPS)</span>
+            <span id="lbl-cap" class="font-bold text-gray-200">60</span>
+          </div>
+          <input id="slider-cap" type="range" min="10" max="200" value="60" oninput="onSliderChange('max_upstream_rps', this.value, 'lbl-cap')" class="w-full accent-[#ffb800]">
+        </div>
+
+        <!-- Toggles: Degradation Mode & Storm Mode -->
+        <div class="pt-3 border-t border-[#1e1e2f] space-y-3">
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-xs text-gray-300">Graceful Degradation (SWR)</span>
+            <input id="chk-degradation" type="checkbox" checked onchange="updateDefenseParam('degradation_mode', this.checked)" class="w-4 h-4 accent-[#00ff88] rounded bg-gray-900 border-gray-700">
+          </label>
+          <label class="flex items-center justify-between cursor-pointer">
+            <span class="text-xs text-gray-300">Adaptive Storm Mode</span>
+            <input id="chk-storm" type="checkbox" checked onchange="updateDefenseParam('storm_mode_enabled', this.checked)" class="w-4 h-4 accent-[#ff3366] rounded bg-gray-900 border-gray-700">
+          </label>
+        </div>
       </div>
 
-      <div class="text-[10px] text-gray-500 text-center pt-4 border-t border-[#1e1e2f] mt-4 font-mono">
-        CHANGES APPLIED LIVE VIA CONTROL API
+      <!-- Top Blocked Targets Micro-Panel -->
+      <div class="pt-4 border-t border-[#1e1e2f] mt-4">
+        <h4 class="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-2">Top Blocked Targets</h4>
+        <div id="top-blocked-list" class="space-y-1 text-xs">
+          <div class="text-[11px] text-gray-600 italic">No blocked targets yet</div>
+        </div>
       </div>
     </section>
 
   </main>
 
-  <!-- Client-side Logic -->
+  <footer class="mt-6 pt-4 border-t border-[#1e1e2f] text-center text-[10px] text-gray-600">
+    TEAM 9 // PURE ASGI RATE LIMITER // PER-SESSION SANDBOX ENGINE
+  </footer>
+
   <script>
+    // State & Config
     let activeConfig = {
       shield_enabled: true,
       algorithm: "token_bucket",
       base_capacity: 10,
-      base_refill_rate: 1.0,
+      base_refill_rate: 1,
+      window_seconds: 10,
       max_upstream_rps: 60,
-      degradation_mode: true,
-      storm_mode_enabled: true
+      storm_mode_enabled: true,
+      degradation_mode: true
     };
-
+    let currentSessionId = "";
+    let deployTarget = "server";
     let chartInstance = null;
     let debounceTimer = null;
 
-    // Initialize Chart.js
+    // Toast Notification Utility
+    function showToast(msg, type = "info") {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      const borderCol = type === "warning" ? "border-[#ffb800] text-[#ffb800]" : "border-[#00ff88] text-[#00ff88]";
+      toast.className = `bg-[#151522] border ${borderCol} px-4 py-2.5 rounded-lg text-xs font-mono shadow-xl toast-enter pointer-events-auto`;
+      toast.textContent = msg;
+      container.appendChild(toast);
+      requestAnimationFrame(() => toast.classList.add('toast-visible'));
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-20px)';
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    // Chart Setup (120-second rolling window)
     function initChart() {
       const ctx = document.getElementById('trafficChart').getContext('2d');
+      const labels = Array.from({ length: 120 }, (_, i) => `${120 - i}s`);
+
       chartInstance = new Chart(ctx, {
         type: 'line',
         data: {
-          labels: Array(120).fill(''),
+          labels: labels,
           datasets: [
             {
               label: 'Accepted',
-              data: Array(120).fill(0),
+              data: new Array(120).fill(0),
               borderColor: '#00ff88',
               backgroundColor: 'rgba(0, 255, 136, 0.1)',
               borderWidth: 2,
-              tension: 0.2,
               fill: true,
+              tension: 0.3,
               pointRadius: 0
             },
             {
               label: 'Degraded',
-              data: Array(120).fill(0),
+              data: new Array(120).fill(0),
               borderColor: '#00d4ff',
               backgroundColor: 'rgba(0, 212, 255, 0.1)',
-              borderWidth: 1.5,
-              tension: 0.2,
+              borderWidth: 2,
               fill: true,
+              tension: 0.3,
               pointRadius: 0
             },
             {
               label: 'Queued',
-              data: Array(120).fill(0),
+              data: new Array(120).fill(0),
               borderColor: '#ffb800',
               backgroundColor: 'rgba(255, 184, 0, 0.1)',
-              borderWidth: 1.5,
-              tension: 0.2,
+              borderWidth: 2,
               fill: true,
+              tension: 0.3,
               pointRadius: 0
             },
             {
               label: 'Blocked',
-              data: Array(120).fill(0),
+              data: new Array(120).fill(0),
               borderColor: '#ff3366',
               backgroundColor: 'rgba(255, 51, 102, 0.15)',
               borderWidth: 2,
-              tension: 0.2,
               fill: true,
+              tension: 0.3,
               pointRadius: 0
             }
           ]
@@ -363,20 +396,29 @@
       });
     }
 
-    // Connect WebSocket Telemetry Feed with automatic Polling fallback (essential for Serverless/Vercel)
+    // Connect Telemetry Feed (WebSockets on persistent host, 500ms Polling on Vercel/Fallback)
     let pollingInterval = null;
+    let ws = null;
 
     function startPollingFallback() {
       if (pollingInterval) return;
+      const pollFreq = deployTarget === 'vercel' ? 500 : 1000;
       pollingInterval = setInterval(async () => {
         try {
-          const res = await fetch('/control/metrics');
+          const res = await fetch('/control/metrics', {
+            headers: currentSessionId ? { 'X-Session-Id': currentSessionId } : {}
+          });
           if (res.ok) {
             const data = await res.json();
+            if (data.session_id && currentSessionId && data.session_id !== currentSessionId) {
+              currentSessionId = data.session_id;
+              updateSessionBadge(data.session_id);
+              showToast("Session restarted on serverless instance", "warning");
+            }
             updateUI(data);
           }
         } catch (e) {}
-      }, 1000);
+      }, pollFreq);
     }
 
     function stopPollingFallback() {
@@ -387,10 +429,15 @@
     }
 
     function connectTelemetryWebSocket() {
+      if (deployTarget === 'vercel') {
+        startPollingFallback();
+        return;
+      }
+
       try {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/telemetry`;
-        const ws = new WebSocket(wsUrl);
+        const wsUrl = `${protocol}//${window.location.host}/ws/telemetry?session_id=${encodeURIComponent(currentSessionId || '')}`;
+        ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
           stopPollingFallback();
@@ -399,6 +446,10 @@
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            if (data.session_id && currentSessionId && data.session_id !== currentSessionId) {
+              currentSessionId = data.session_id;
+              updateSessionBadge(data.session_id);
+            }
             updateUI(data);
           } catch (err) {
             console.error("Telemetry parse error", err);
@@ -430,7 +481,7 @@
       document.getElementById('stat-legit-pct').innerText = `${snapshot.legit_success_pct}%`;
       document.getElementById('stat-attack-pct').innerText = `${snapshot.attack_block_pct}%`;
       document.getElementById('stat-buckets').innerText = snapshot.active_buckets;
-      document.getElementById('badge-store').innerText = snapshot.store_backend;
+      document.getElementById('badge-store').innerText = snapshot.store_backend || 'MEMORY';
 
       // Storm badge
       const stormBadge = document.getElementById('badge-storm');
@@ -444,7 +495,7 @@
 
       // Simulation indicator
       const simStatus = document.getElementById('sim-status-indicator');
-      if (snapshot.simulation_active) {
+      if (snapshot.simulation_active || clientSimRunning) {
         simStatus.innerText = 'ATTACK ACTIVE';
         simStatus.className = 'text-xs px-2 py-0.5 rounded bg-red-950 text-[#ff3366] border border-red-800 animate-pulse';
       } else {
@@ -478,6 +529,38 @@
           row.appendChild(countSpan);
           topList.appendChild(row);
         });
+      }
+    }
+
+    function updateSessionBadge(sessionId) {
+      const badge = document.getElementById('badge-session-id');
+      if (badge && sessionId) {
+        const shortId = sessionId.length > 10 ? sessionId.substring(0, 8) + '...' : sessionId;
+        badge.innerText = shortId;
+        badge.title = `Full Sandbox ID: ${sessionId}`;
+      }
+    }
+
+    async function createNewSession() {
+      try {
+        const res = await fetch('/session/new', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          currentSessionId = data.session_id;
+          updateSessionBadge(data.session_id);
+          showToast(`Fresh sandbox created: ${data.session_id.substring(0, 8)}...`);
+          // Re-fetch control state for new session
+          await loadSessionState();
+          // Reset WebSocket or pollers
+          if (ws) {
+            ws.close();
+          } else {
+            stopPollingFallback();
+            startPollingFallback();
+          }
+        }
+      } catch (err) {
+        console.error("Failed to create new session", err);
       }
     }
 
@@ -523,7 +606,10 @@
       try {
         await fetch('/control/config', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-Id': currentSessionId
+          },
           body: JSON.stringify(activeConfig)
         });
       } catch (err) {
@@ -531,13 +617,14 @@
       }
     }
 
-    // Browser-Side Traffic Simulator (executes directly from client, guaranteed to work in Serverless / Vercel)
+    // Browser-Side Traffic Simulator (namespaced to current session sandbox)
     let clientSimRunning = false;
     let clientSimTimer = null;
     let clientSimEndTime = 0;
     let clientReqsInSec = 0;
     let clientCurrentRps = 0;
     let clientRpsTimer = null;
+    const DEMO_KEYS = ["free-demo-key", "pro-demo-key", "ent-demo-key"];
 
     async function sendClientSimRequest(pattern) {
       if (!clientSimRunning) return;
@@ -548,7 +635,10 @@
 
       let url = '/api/data';
       let method = 'GET';
-      let headers = { 'X-Sim-Class': 'attack' };
+      let headers = {
+        'X-Sim-Class': 'attack',
+        'X-Session-Id': currentSessionId
+      };
       let body = null;
 
       if (pattern === 'normal') {
@@ -583,9 +673,7 @@
         const t0 = performance.now();
         fetch(url, { method, headers, body })
           .then(res => {
-            const lat = Math.round(performance.now() - t0);
             if (res.status === 429 || res.headers.get('x-degraded-mode')) {
-              // Throttled or Degraded
               const blkEl = document.getElementById('stat-attack-pct');
               if (blkEl && !blkEl.textContent.includes('100')) blkEl.innerText = '100.0%';
             }
@@ -607,7 +695,6 @@
         simStatus.className = 'text-xs px-2 py-0.5 rounded bg-red-950 text-[#ff3366] border border-red-800 animate-pulse';
       }
 
-      // 1-second interval to compute client-side RPS and update UI
       clientRpsTimer = setInterval(() => {
         clientCurrentRps = clientReqsInSec;
         clientReqsInSec = 0;
@@ -617,7 +704,6 @@
         }
       }, 1000);
 
-      // Distribute batches across time slices
       const intervalMs = Math.max(20, Math.floor(1000 / (rps / 4)));
       const batchSize = Math.max(1, Math.round(rps * (intervalMs / 1000)));
 
@@ -633,12 +719,15 @@
     }
 
     async function startSim(pattern) {
-      // 1. Notify control API
+      // 1. Notify control API for this session
       try {
-        await fetch(`/control/simulate/${pattern}`, { method: 'POST' });
+        await fetch(`/control/simulate/${pattern}`, {
+          method: 'POST',
+          headers: { 'X-Session-Id': currentSessionId }
+        });
       } catch (err) {}
 
-      // 2. Run client-side simulator directly in the browser (essential for Serverless/Vercel)
+      // 2. Run client-side simulator directly in browser
       let rps = 5;
       if (pattern === 'ddos') rps = 120;
       else if (pattern === 'exhaustion') rps = 30;
@@ -665,17 +754,26 @@
         simStatus.className = 'text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400';
       }
       try {
-        await fetch('/control/simulate/stop', { method: 'POST' });
+        await fetch('/control/simulate/stop', {
+          method: 'POST',
+          headers: { 'X-Session-Id': currentSessionId }
+        });
       } catch (err) {}
     }
 
-    // Startup Init
-    window.addEventListener('DOMContentLoaded', async () => {
-      initChart();
-      connectTelemetryWebSocket();
+    async function loadSessionState() {
       try {
-        const res = await fetch('/control/state');
+        const res = await fetch('/control/state', {
+          headers: currentSessionId ? { 'X-Session-Id': currentSessionId } : {}
+        });
         const state = await res.json();
+        if (state.session_id) {
+          currentSessionId = state.session_id;
+          updateSessionBadge(state.session_id);
+        }
+        if (state.deploy_target) {
+          deployTarget = state.deploy_target;
+        }
         if (state.config) {
           activeConfig = { ...activeConfig, ...state.config };
           renderShieldButton();
@@ -692,6 +790,28 @@
       } catch (err) {
         console.warn("Could not prefetch control state", err);
       }
+    }
+
+    // Startup Init
+    window.addEventListener('DOMContentLoaded', async () => {
+      initChart();
+
+      // Retrieve or establish session
+      try {
+        const sRes = await fetch('/session/current');
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          currentSessionId = sData.session_id;
+          deployTarget = sData.deploy_target || 'server';
+          updateSessionBadge(sData.session_id);
+          if (sData.is_new) {
+            showToast("Sandbox initialized", "info");
+          }
+        }
+      } catch (e) {}
+
+      await loadSessionState();
+      connectTelemetryWebSocket();
     });
   </script>
 </body>

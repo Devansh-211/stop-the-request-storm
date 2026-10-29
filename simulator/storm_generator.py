@@ -5,6 +5,7 @@ Features:
 - Drift-free pacing (schedule against next_t += 1/rps)
 - Bounded in-flight concurrency (Semaphore 500)
 - Cancellable execution
+- Session-scoped request attribution (X-Session-Id header)
 - Multiple attack and baseline patterns
 - CLI interface support
 """
@@ -15,7 +16,7 @@ import random
 import asyncio
 import argparse
 import httpx
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Target base URL default
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -31,7 +32,7 @@ async def _send_request(
     url: str,
     headers: Dict[str, str],
     json_body: Any = None,
-    sem: asyncio.Semaphore = None
+    sem: Optional[asyncio.Semaphore] = None
 ):
     if sem is not None:
         async with sem:
@@ -49,10 +50,12 @@ async def _send_request(
 async def run_simulation_pattern(
     pattern: str,
     duration_seconds: int = 20,
-    base_url: str = DEFAULT_BASE_URL
+    base_url: str = DEFAULT_BASE_URL,
+    session_id: Optional[str] = None
 ):
     """
-    Executes specified attack or traffic pattern with drift-free pacing.
+    Executes specified attack or traffic pattern with drift-free pacing,
+    namespaced to a specific session_id.
     Patterns:
     - normal: 5 RPS baseline legitimate traffic
     - ddos: 150 RPS burst flood from 1-3 IPs on GET /api/data
@@ -94,14 +97,15 @@ async def run_simulation_pattern(
             body = None
             headers = {"X-Sim-Class": "attack"}
 
+            if session_id:
+                headers["X-Session-Id"] = session_id
+
             # Build request per pattern
             if pattern == "normal":
-                # Legitimate mixed traffic
                 endpoint = random.choice(["/api/ping", "/api/data"])
                 method = "GET"
                 body = None
-                headers = {"X-Sim-Class": "legit"}
-                # Sometimes provide valid key, sometimes anonymous
+                headers["X-Sim-Class"] = "legit"
                 r = random.random()
                 if r < 0.4:
                     headers["X-API-Key"] = random.choice(VALID_KEYS)
@@ -109,35 +113,23 @@ async def run_simulation_pattern(
                     headers["X-Forwarded-For"] = f"203.0.113.{random.randint(10, 50)}"
 
             elif pattern == "ddos":
-                # Burst flood from 1-3 IPs targeting GET /api/data
                 endpoint = "/api/data"
                 method = "GET"
                 body = None
-                headers = {
-                    "X-Sim-Class": "attack",
-                    "X-Forwarded-For": random.choice(ddos_ips)
-                }
+                headers["X-Forwarded-For"] = random.choice(ddos_ips)
 
             elif pattern == "exhaustion":
-                # Heavy resource exhaustion: POST /api/heavy-compute
                 endpoint = "/api/heavy-compute"
                 method = "POST"
                 body = {"task": "heavy_stress_payload", "iterations": 5000}
-                headers = {
-                    "X-Sim-Class": "attack",
-                    "X-Forwarded-For": f"192.0.2.{random.randint(1, 254)}"
-                }
+                headers["X-Forwarded-For"] = f"192.0.2.{random.randint(1, 254)}"
 
             elif pattern == "botnet":
-                # Distributed botnet: 500+ distinct IPs, random invalid keys
                 endpoint = random.choice(["/api/ping", "/api/data"])
                 method = "GET"
                 body = None
                 spoofed_ip = f"{random.randint(11, 220)}.{random.randint(1, 254)}.{random.randint(1, 254)}.{random.randint(1, 254)}"
-                headers = {
-                    "X-Sim-Class": "attack",
-                    "X-Forwarded-For": spoofed_ip
-                }
+                headers["X-Forwarded-For"] = spoofed_ip
                 if random.random() < 0.5:
                     headers["X-API-Key"] = random.choice(INVALID_KEYS)
 
@@ -152,10 +144,11 @@ def main():
     parser.add_argument("--pattern", choices=["normal", "ddos", "exhaustion", "botnet"], default="ddos", help="Traffic pattern")
     parser.add_argument("--duration", type=int, default=20, help="Duration in seconds")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Base URL of the Shield gateway")
+    parser.add_argument("--session-id", default=None, help="Optional session ID to target")
     args = parser.parse_args()
 
-    print(f"[StormGenerator] Starting '{args.pattern}' pattern against {args.base_url} for {args.duration}s...")
-    asyncio.run(run_simulation_pattern(pattern=args.pattern, duration_seconds=args.duration, base_url=args.base_url))
+    print(f"[StormGenerator] Starting '{args.pattern}' pattern against {args.base_url} for {args.duration}s (Session: {args.session_id})...")
+    asyncio.run(run_simulation_pattern(pattern=args.pattern, duration_seconds=args.duration, base_url=args.base_url, session_id=args.session_id))
     print("[StormGenerator] Simulation completed.")
 
 
