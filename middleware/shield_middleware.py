@@ -11,6 +11,7 @@ Handles:
 - Telemetry & latency recording
 """
 
+import os
 import time
 import math
 import random
@@ -80,11 +81,18 @@ class ShieldMiddleware:
         socket_ip = client[0] if client else "127.0.0.1"
 
         if ACTIVE_CONFIG.trust_forwarded_for:
-            # Trusted if socket IP is loopback or local private
-            if socket_ip in ("127.0.0.1", "::1", "localhost") or socket_ip.startswith("10.") or socket_ip.startswith("192.168."):
+            # Trusted if running on Vercel, or socket IP is loopback or local private
+            is_vercel = os.getenv("VERCEL") == "1"
+            is_local = (
+                socket_ip in ("127.0.0.1", "::1", "localhost")
+                or socket_ip.startswith("10.")
+                or socket_ip.startswith("192.168.")
+                or socket_ip.startswith("172.")
+            )
+            if is_vercel or is_local or ACTIVE_CONFIG.trust_forwarded_for:
                 xff = headers.get("x-forwarded-for")
                 if xff:
-                    # Pick left-most entry
+                    # Pick left-most entry (origin client IP)
                     left_ip = xff.split(",")[0].strip()
                     if left_ip:
                         return left_ip

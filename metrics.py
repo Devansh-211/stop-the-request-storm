@@ -75,12 +75,13 @@ class MetricsCollector:
 
         if status == "accepted":
             self._accepted[slot] += 1
-        elif status == "degraded":
-            self._degraded[slot] += 1
         elif status == "queued":
             self._queued[slot] += 1
-        elif status == "blocked":
-            self._blocked[slot] += 1
+        elif status in ("blocked", "degraded"):
+            if status == "blocked":
+                self._blocked[slot] += 1
+            else:
+                self._degraded[slot] += 1
             self._blocked_identities[identity] = self._blocked_identities.get(identity, 0) + 1
             self._blocked_identities_ts.append((now, identity))
 
@@ -174,17 +175,28 @@ class MetricsCollector:
                 history_queued.append(0)
                 history_blocked.append(0)
 
-        # Calculate current instantaneous RPS (last full second)
+        # Calculate current instantaneous RPS (rolling active window across last 2s)
         prev_sec = now_sec - 1
         prev_idx = prev_sec % self.buffer_seconds
-        current_rps = 0
+        now_idx = now_sec % self.buffer_seconds
+        rps_prev = 0
+        rps_now = 0
         if self._timestamps[prev_idx] == prev_sec:
-            current_rps = (
+            rps_prev = (
                 self._accepted[prev_idx]
                 + self._degraded[prev_idx]
                 + self._queued[prev_idx]
                 + self._blocked[prev_idx]
             )
+        if self._timestamps[now_idx] == now_sec:
+            rps_now = (
+                self._accepted[now_idx]
+                + self._degraded[now_idx]
+                + self._queued[now_idx]
+                + self._blocked[now_idx]
+            )
+        # Use whichever is actively recording traffic or average them
+        current_rps = max(rps_prev, rps_now)
 
         # Calculate p50 / p95 latency over past 10 seconds
         cutoff_10s = now - 10.0

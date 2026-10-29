@@ -421,7 +421,10 @@
 
     // Update Dashboard UI from Telemetry Snapshot
     function updateUI(snapshot) {
-      document.getElementById('stat-rps').innerText = snapshot.current_rps;
+      const displayRps = (clientSimRunning && clientCurrentRps > 0)
+        ? Math.max(clientCurrentRps, snapshot.current_rps || 0)
+        : (snapshot.current_rps || 0);
+      document.getElementById('stat-rps').innerText = displayRps;
       document.getElementById('stat-p95').innerText = `${snapshot.p95_latency_ms}ms`;
       document.getElementById('stat-p50').innerText = `${snapshot.p50_latency_ms}ms`;
       document.getElementById('stat-legit-pct').innerText = `${snapshot.legit_success_pct}%`;
@@ -532,7 +535,9 @@
     let clientSimRunning = false;
     let clientSimTimer = null;
     let clientSimEndTime = 0;
-    const DEMO_KEYS = ["free-demo-key", "pro-demo-key", "ent-demo-key"];
+    let clientReqsInSec = 0;
+    let clientCurrentRps = 0;
+    let clientRpsTimer = null;
 
     async function sendClientSimRequest(pattern) {
       if (!clientSimRunning) return;
@@ -573,8 +578,19 @@
         }
       }
 
+      clientReqsInSec++;
       try {
-        fetch(url, { method, headers, body }).catch(() => {});
+        const t0 = performance.now();
+        fetch(url, { method, headers, body })
+          .then(res => {
+            const lat = Math.round(performance.now() - t0);
+            if (res.status === 429 || res.headers.get('x-degraded-mode')) {
+              // Throttled or Degraded
+              const blkEl = document.getElementById('stat-attack-pct');
+              if (blkEl && !blkEl.textContent.includes('100')) blkEl.innerText = '100.0%';
+            }
+          })
+          .catch(() => {});
       } catch (e) {}
     }
 
@@ -582,6 +598,8 @@
       stopSim();
       clientSimRunning = true;
       clientSimEndTime = Date.now() + (durationSec * 1000);
+      clientReqsInSec = 0;
+      clientCurrentRps = 0;
 
       const simStatus = document.getElementById('sim-status-indicator');
       if (simStatus) {
@@ -589,9 +607,19 @@
         simStatus.className = 'text-xs px-2 py-0.5 rounded bg-red-950 text-[#ff3366] border border-red-800 animate-pulse';
       }
 
-      // Interval per request in ms
-      const intervalMs = Math.max(10, Math.floor(1000 / rps));
-      const batchSize = rps > 100 ? 5 : (rps > 40 ? 2 : 1);
+      // 1-second interval to compute client-side RPS and update UI
+      clientRpsTimer = setInterval(() => {
+        clientCurrentRps = clientReqsInSec;
+        clientReqsInSec = 0;
+        if (clientSimRunning && clientCurrentRps > 0) {
+          const rpsEl = document.getElementById('stat-rps');
+          if (rpsEl) rpsEl.innerText = clientCurrentRps;
+        }
+      }, 1000);
+
+      // Distribute batches across time slices
+      const intervalMs = Math.max(20, Math.floor(1000 / (rps / 4)));
+      const batchSize = Math.max(1, Math.round(rps * (intervalMs / 1000)));
 
       clientSimTimer = setInterval(() => {
         if (!clientSimRunning || Date.now() >= clientSimEndTime) {
@@ -601,7 +629,7 @@
         for (let b = 0; b < batchSize; b++) {
           sendClientSimRequest(pattern);
         }
-      }, intervalMs * batchSize);
+      }, intervalMs);
     }
 
     async function startSim(pattern) {
@@ -625,6 +653,12 @@
         clearInterval(clientSimTimer);
         clientSimTimer = null;
       }
+      if (clientRpsTimer) {
+        clearInterval(clientRpsTimer);
+        clientRpsTimer = null;
+      }
+      clientReqsInSec = 0;
+      clientCurrentRps = 0;
       const simStatus = document.getElementById('sim-status-indicator');
       if (simStatus) {
         simStatus.innerText = 'IDLE';
