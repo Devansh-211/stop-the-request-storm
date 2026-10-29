@@ -9,7 +9,7 @@ Handles:
 - Queue shaper awaiting
 - Graceful degradation (Stale-While-Revalidate per session)
 - De facto and RFC 9110 rate limit headers
-- Telemetry & latency recording (per session)
+- Telemetry & status code latency / request log recording (per session)
 - Cookie injection for new/refreshed sessions
 """
 
@@ -143,7 +143,6 @@ class ShieldMiddleware:
         # Helper to inject session cookie on response start
         cookie_to_set = None
         if is_new_session or not headers.get("cookie") or "storm_session=" not in headers.get("cookie", ""):
-            # Set HttpOnly, SameSite=Lax cookie (add Secure when served over HTTPS)
             is_https = scope.get("scheme") == "https" or headers.get("x-forwarded-proto") == "https"
             secure_flag = "; Secure" if is_https else ""
             cookie_to_set = (
@@ -166,27 +165,40 @@ class ShieldMiddleware:
 
         # 2. Extract Identity & Tier
         raw_identity, tier = self._resolve_identity_and_tier(headers, client_ip)
-        # Namespace identity by session so spoofed IPs in Session A never consume Session B's buckets
         session_scoped_identity = f"{session_state.session_id}:{raw_identity}"
+
+        endpoint_key = f"{method} {path}"
+        endpoint_cost = ENDPOINT_COST_MAP.get(endpoint_key, 1)
 
         # 3. Check Master Shield switch
         if not cfg.shield_enabled:
-            # Shield OFF: forward untouched, record metrics
+            # Shield OFF: forward untouched, record metrics & request log
             async def _send_unshielded(message: Dict[str, Any]):
                 if message["type"] == "http.response.start":
                     latency_ms = (time.time() - req_start_time) * 1000.0
                     status_code = message.get("status", 200)
-                    session_state.metrics.record_request(
-                        status="accepted" if status_code < 400 else "blocked",
-                        latency_ms=latency_ms,
-                        identity=raw_identity,
-                        sim_class=sim_class
-                    )
                     raw_hdrs = list(message.get("headers", []))
                     if cookie_to_set:
                         raw_hdrs.append((b"set-cookie", cookie_to_set))
                     raw_hdrs.append((b"x-session-id", session_state.session_id.encode("latin1")))
                     message["headers"] = raw_hdrs
+
+                    resp_h_map = {k.decode("latin1"): v.decode("latin1") for k, v in raw_hdrs}
+
+                    session_state.metrics.record_request(
+                        status="accepted" if status_code < 400 else "blocked",
+                        latency_ms=latency_ms,
+                        identity=raw_identity,
+                        sim_class=sim_class,
+                        status_code=status_code,
+                        method=method,
+                        path=path,
+                        tier=tier,
+                        cost=endpoint_cost,
+                        reason="shield_disabled",
+                        retry_after_s=0,
+                        response_headers=resp_h_map
+                    )
                 await send(message)
 
             await self.app(scope, receive, _send_unshielded)
@@ -219,6 +231,8 @@ class ShieldMiddleware:
                     method=method,
                     path=path,
                     identity=raw_identity,
+                    tier=tier,
+                    endpoint_cost=endpoint_cost,
                     sim_class=sim_class,
                     decision=Decision(
                         allowed=False,
@@ -236,9 +250,6 @@ class ShieldMiddleware:
                 return
 
         # 6. Limiter Strategy & Tier Multipliers
-        endpoint_key = f"{method} {path}"
-        endpoint_cost = ENDPOINT_COST_MAP.get(endpoint_key, 1)
-
         multiplier = getattr(TierMultiplier, tier, 1.0)
         eff_capacity = cfg.base_capacity * multiplier
         eff_rate = cfg.base_refill_rate * multiplier
@@ -268,8 +279,10 @@ class ShieldMiddleware:
                 delay_sec = decision.queued_delay_ms / 1000.0
                 await asyncio.sleep(delay_sec)
                 status_metric = "queued"
+                reason_metric = "queue_shaper"
             else:
                 status_metric = "accepted"
+                reason_metric = "allowed"
 
             await self._forward_and_respond(
                 scope=scope,
@@ -278,9 +291,12 @@ class ShieldMiddleware:
                 method=method,
                 path=path,
                 identity=raw_identity,
+                tier=tier,
+                endpoint_cost=endpoint_cost,
                 sim_class=sim_class,
                 decision=decision,
                 status_metric=status_metric,
+                reason_metric=reason_metric,
                 req_start_time=req_start_time,
                 session_state=session_state,
                 cookie_to_set=cookie_to_set
@@ -293,6 +309,8 @@ class ShieldMiddleware:
                 method=method,
                 path=path,
                 identity=raw_identity,
+                tier=tier,
+                endpoint_cost=endpoint_cost,
                 sim_class=sim_class,
                 decision=decision,
                 req_start_time=req_start_time,
@@ -308,9 +326,12 @@ class ShieldMiddleware:
         method: str,
         path: str,
         identity: str,
+        tier: str,
+        endpoint_cost: int,
         sim_class: str,
         decision: Decision,
         status_metric: str,
+        reason_metric: str,
         req_start_time: float,
         session_state: SessionState,
         cookie_to_set: Optional[bytes]
@@ -352,7 +373,15 @@ class ShieldMiddleware:
                     status=status_metric,
                     latency_ms=latency_ms,
                     identity=identity,
-                    sim_class=sim_class
+                    sim_class=sim_class,
+                    status_code=captured_status,
+                    method=method,
+                    path=path,
+                    tier=tier,
+                    cost=endpoint_cost,
+                    reason=reason_metric,
+                    retry_after_s=0,
+                    response_headers=captured_headers
                 )
 
             elif message["type"] == "http.response.body" and is_cacheable:
@@ -385,6 +414,8 @@ class ShieldMiddleware:
         method: str,
         path: str,
         identity: str,
+        tier: str,
+        endpoint_cost: int,
         sim_class: str,
         decision: Decision,
         req_start_time: float,
@@ -412,12 +443,6 @@ class ShieldMiddleware:
             if entry is not None:
                 # Stale-While-Revalidate: serve cached entry with status 200
                 latency_ms = (time.time() - req_start_time) * 1000.0
-                session_state.metrics.record_request(
-                    status="degraded",
-                    latency_ms=latency_ms,
-                    identity=identity,
-                    sim_class=sim_class
-                )
 
                 response_headers = [
                     (b"content-type", b"application/json"),
@@ -430,6 +455,23 @@ class ShieldMiddleware:
                 ]
                 if cookie_to_set:
                     response_headers.append((b"set-cookie", cookie_to_set))
+
+                header_map = {k.decode("latin1"): v.decode("latin1") for k, v in response_headers}
+
+                session_state.metrics.record_request(
+                    status="degraded",
+                    latency_ms=latency_ms,
+                    identity=identity,
+                    sim_class=sim_class,
+                    status_code=200,
+                    method=method,
+                    path=path,
+                    tier=tier,
+                    cost=endpoint_cost,
+                    reason="cached_fallback",
+                    retry_after_s=0,
+                    response_headers=header_map
+                )
 
                 await send({
                     "type": "http.response.start",
@@ -445,12 +487,6 @@ class ShieldMiddleware:
 
         # Write endpoint, degradation disabled, or cache miss -> 429 Too Many Requests
         latency_ms = (time.time() - req_start_time) * 1000.0
-        session_state.metrics.record_request(
-            status="blocked",
-            latency_ms=latency_ms,
-            identity=identity,
-            sim_class=sim_class
-        )
 
         base_retry_sec = max(1.0, decision.retry_after_ms / 1000.0)
         jitter = random.uniform(0.0, cfg.retry_after_jitter_max)
@@ -478,6 +514,23 @@ class ShieldMiddleware:
             headers_429.append((b"set-cookie", cookie_to_set))
         if is_read_cacheable:
             headers_429.append((b"x-degraded-mode", b"Cache-Miss"))
+
+        header_map_429 = {k.decode("latin1"): v.decode("latin1") for k, v in headers_429}
+
+        session_state.metrics.record_request(
+            status="blocked",
+            latency_ms=latency_ms,
+            identity=identity,
+            sim_class=sim_class,
+            status_code=429,
+            method=method,
+            path=path,
+            tier=tier,
+            cost=endpoint_cost,
+            reason=decision.reason.lower() if decision.reason else "rate_limit_exceeded",
+            retry_after_s=retry_after_int,
+            response_headers=header_map_429
+        )
 
         await send({
             "type": "http.response.start",

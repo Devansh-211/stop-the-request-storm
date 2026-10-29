@@ -51,12 +51,71 @@
       transform: translateY(0);
       opacity: 1;
     }
+    .flash-highlight {
+      animation: flash-anim 0.4s ease-out;
+    }
+    @keyframes flash-anim {
+      0% { transform: scale(1.08); filter: brightness(1.6); }
+      100% { transform: scale(1); filter: brightness(1); }
+    }
   </style>
 </head>
 <body class="min-h-screen flex flex-col p-4 md:p-6 select-none relative">
 
   <!-- Toast Notification Container -->
   <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+  <!-- Detail Drawer Modal (for Request Log Row Inspection) -->
+  <div id="drawer-backdrop" onclick="closeDrawer()" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-40 hidden transition-opacity"></div>
+  <div id="detail-drawer" class="fixed top-0 right-0 h-full w-full max-w-md bg-[#11111a] border-l border-[#1e1e2f] z-50 transform translate-x-full transition-transform duration-300 p-6 flex flex-col shadow-2xl overflow-y-auto">
+    <div class="flex items-center justify-between pb-4 border-b border-[#1e1e2f] mb-4">
+      <div>
+        <h3 class="text-sm font-bold text-gray-200 uppercase tracking-wider">Request Telemetry Details</h3>
+        <div id="drawer-subtitle" class="text-xs text-gray-500 font-mono mt-0.5"></div>
+      </div>
+      <button onclick="closeDrawer()" class="text-gray-400 hover:text-white text-lg font-bold px-2 py-1">&times;</button>
+    </div>
+    
+    <div class="space-y-4 text-xs font-mono">
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase font-bold mb-1">Status & Outcome</div>
+        <div class="flex items-center space-x-2">
+          <span id="drawer-status-badge" class="px-2 py-0.5 rounded font-bold"></span>
+          <span id="drawer-outcome-badge" class="px-2 py-0.5 rounded bg-gray-800 text-gray-300"></span>
+          <span id="drawer-latency" class="text-gray-400"></span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2 bg-[#151522] p-3 rounded-lg border border-gray-800">
+        <div>
+          <div class="text-[10px] text-gray-500 uppercase">Method & Path</div>
+          <div id="drawer-endpoint" class="text-gray-200 font-bold mt-0.5 truncate"></div>
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 uppercase">Cost / Token Charge</div>
+          <div id="drawer-cost" class="text-[#ffb800] font-bold mt-0.5"></div>
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 uppercase">Identity (Masked)</div>
+          <div id="drawer-identity" class="text-gray-300 font-bold mt-0.5 truncate"></div>
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 uppercase">Tier Multiplier</div>
+          <div id="drawer-tier" class="text-gray-300 font-bold mt-0.5"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase font-bold mb-1">Defense Decision Reason</div>
+        <div id="drawer-reason" class="p-2.5 rounded bg-[#151522] border border-gray-800 text-[#00d4ff] font-bold"></div>
+      </div>
+
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase font-bold mb-1">Injected Response Headers</div>
+        <pre id="drawer-headers" class="bg-[#0a0a0f] p-3 rounded border border-gray-900 text-[11px] text-gray-300 overflow-x-auto whitespace-pre-wrap leading-relaxed"></pre>
+      </div>
+    </div>
+  </div>
 
   <!-- Header -->
   <header class="flex flex-wrap items-center justify-between pb-4 border-b border-[#1e1e2f] mb-6 gap-4">
@@ -156,7 +215,7 @@
       </div>
     </section>
 
-    <!-- CENTER PANEL: Real-time Telemetry & Time Series Chart (6 cols) -->
+    <!-- CENTER PANEL: Real-time Telemetry, Charts, & Request Log (6 cols) -->
     <section class="lg:col-span-6 flex flex-col space-y-6">
       
       <!-- Key Metric Tiles -->
@@ -190,8 +249,106 @@
             <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#ff3366] mr-1"></span> Blocked</span>
           </div>
         </div>
-        <div class="relative flex-grow min-h-[260px] w-full">
+        <div class="relative flex-grow min-h-[220px] w-full">
           <canvas id="trafficChart"></canvas>
+        </div>
+      </div>
+
+      <!-- NEW SECTION: Status Codes & Live Request Log (Collapsible) -->
+      <div class="panel rounded-xl p-4 flex flex-col space-y-4">
+        <div class="flex items-center justify-between border-b border-[#1e1e2f] pb-2">
+          <div class="flex items-center space-x-2">
+            <h3 class="text-xs font-bold tracking-wider text-gray-200 uppercase">📊 Status Codes & Request Log</h3>
+            <span id="log-count-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 font-mono">0 events</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button id="btn-pause-log" onclick="toggleLogPause()" class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition">
+              ⏸ PAUSE
+            </button>
+            <button onclick="toggleLogCollapse()" class="text-xs text-gray-400 hover:text-white px-1">
+              <span id="log-collapse-icon">▼</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="log-section-content" class="space-y-4">
+          <!-- 4 Status Code Tiles with counts, percentages, and flashing animations -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div id="tile-status-200" class="bg-[#151522] rounded-lg p-2.5 text-center border border-gray-800 transition">
+              <div class="text-[9px] uppercase text-gray-400 font-bold">200 OK</div>
+              <div id="count-status-200" class="text-xl font-black text-[#00ff88] mt-0.5">0</div>
+              <div id="pct-status-200" class="text-[10px] text-gray-500 font-mono">100.0%</div>
+            </div>
+
+            <div id="tile-status-deg" class="bg-[#151522] rounded-lg p-2.5 text-center border border-gray-800 transition">
+              <div class="text-[9px] uppercase text-gray-400 font-bold">200 Cached</div>
+              <div id="count-status-deg" class="text-xl font-black text-[#00d4ff] mt-0.5">0</div>
+              <div id="pct-status-deg" class="text-[10px] text-gray-500 font-mono">0.0%</div>
+            </div>
+
+            <div id="tile-status-429" class="bg-[#151522] rounded-lg p-2.5 text-center border border-gray-800 transition">
+              <div class="text-[9px] uppercase text-gray-400 font-bold">429 Throttled</div>
+              <div id="count-status-429" class="text-xl font-black text-[#ff3366] mt-0.5">0</div>
+              <div id="pct-status-429" class="text-[10px] text-gray-500 font-mono">0.0%</div>
+            </div>
+
+            <div id="tile-status-5xx" class="bg-[#151522] rounded-lg p-2.5 text-center border border-gray-800 transition">
+              <div class="text-[9px] uppercase text-gray-400 font-bold">5xx Errors</div>
+              <div id="count-status-5xx" class="text-xl font-black text-[#ffb800] mt-0.5">0</div>
+              <div id="pct-status-5xx" class="text-[10px] text-gray-500 font-mono">0.0%</div>
+            </div>
+          </div>
+
+          <!-- Status Code Distribution Chart (120s) -->
+          <div class="bg-[#0a0a0f] p-3 rounded-lg border border-[#1e1e2f]">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-[10px] uppercase font-bold text-gray-400">HTTP Status Distribution (120s)</span>
+              <div class="flex space-x-2 text-[9px]">
+                <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#00ff88] mr-1"></span> 200</span>
+                <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#00d4ff] mr-1"></span> Cached</span>
+                <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#ff3366] mr-1"></span> 429</span>
+                <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#ffb800] mr-1"></span> 5xx</span>
+              </div>
+            </div>
+            <div class="relative h-[120px] w-full">
+              <canvas id="statusChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Filter Chips -->
+          <div class="flex flex-wrap items-center gap-1.5 text-[10px]">
+            <span class="text-gray-500 uppercase font-bold mr-1">Filter:</span>
+            <button onclick="setLogFilter('all')" id="filter-btn-all" class="px-2 py-0.5 rounded font-bold transition bg-[#00ff88] text-black">ALL</button>
+            <button onclick="setLogFilter('200')" id="filter-btn-200" class="px-2 py-0.5 rounded font-bold transition bg-gray-800 hover:bg-gray-700 text-gray-300">200 OK</button>
+            <button onclick="setLogFilter('cached')" id="filter-btn-cached" class="px-2 py-0.5 rounded font-bold transition bg-gray-800 hover:bg-gray-700 text-gray-300">Cached 200</button>
+            <button onclick="setLogFilter('429')" id="filter-btn-429" class="px-2 py-0.5 rounded font-bold transition bg-gray-800 hover:bg-gray-700 text-gray-300">429 Throttled</button>
+            <button onclick="setLogFilter('queued')" id="filter-btn-queued" class="px-2 py-0.5 rounded font-bold transition bg-gray-800 hover:bg-gray-700 text-gray-300">Queued</button>
+          </div>
+
+          <!-- Live Request Log Table (Virtualized to 50 rows, Click row for details) -->
+          <div class="bg-[#0a0a0f] rounded-lg border border-[#1e1e2f] overflow-hidden" onmouseenter="onLogTableHover(true)" onmouseleave="onLogTableHover(false)">
+            <div class="max-h-[220px] overflow-y-auto">
+              <table class="w-full text-left text-[11px] font-mono">
+                <thead class="sticky top-0 bg-[#151522] text-[9px] uppercase text-gray-500 border-b border-[#1e1e2f]">
+                  <tr>
+                    <th class="py-1.5 px-2">Time</th>
+                    <th class="py-1.5 px-2">Endpoint</th>
+                    <th class="py-1.5 px-2">Status</th>
+                    <th class="py-1.5 px-2">Outcome</th>
+                    <th class="py-1.5 px-2">Identity</th>
+                    <th class="py-1.5 px-2">Tier</th>
+                    <th class="py-1.5 px-2">Latency</th>
+                    <th class="py-1.5 px-2">Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="log-table-body" class="divide-y divide-gray-900">
+                  <tr>
+                    <td colspan="8" class="text-center py-4 text-gray-600 italic">Awaiting gateway requests...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -307,7 +464,16 @@
     let currentSessionId = "";
     let deployTarget = "server";
     let chartInstance = null;
+    let statusChartInstance = null;
     let debounceTimer = null;
+
+    // Request Log State
+    let storedRequestLogs = [];
+    let activeLogFilter = 'all';
+    let logPaused = false;
+    let tableHovered = false;
+    let logCollapsed = false;
+    let prevStatusCounts = { total_200: 0, total_degraded_200: 0, total_429: 0, total_5xx: 0 };
 
     // Toast Notification Utility
     function showToast(msg, type = "info") {
@@ -392,6 +558,36 @@
           plugins: {
             legend: { display: false }
           }
+        }
+      });
+
+      // Status Code Chart (Stacked bars)
+      const sCtx = document.getElementById('statusChart').getContext('2d');
+      statusChartInstance = new Chart(sCtx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [
+            { label: '200 OK', data: new Array(120).fill(0), backgroundColor: '#00ff88', stack: 'status' },
+            { label: 'Cached', data: new Array(120).fill(0), backgroundColor: '#00d4ff', stack: 'status' },
+            { label: '429', data: new Array(120).fill(0), backgroundColor: '#ff3366', stack: 'status' },
+            { label: '5xx', data: new Array(120).fill(0), backgroundColor: '#ffb800', stack: 'status' }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          scales: {
+            x: { display: false, stacked: true },
+            y: {
+              stacked: true,
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: '#64748b', font: { family: 'monospace', size: 9 } },
+              beginAtZero: true
+            }
+          },
+          plugins: { legend: { display: false } }
         }
       });
     }
@@ -512,6 +708,35 @@
         chartInstance.update('none');
       }
 
+      // Update Status Code Tiles & Animations
+      if (snapshot.status_counts) {
+        const sc = snapshot.status_counts;
+        updateStatusTile('200', sc.total_200, sc.pct_200, sc.total_200 > prevStatusCounts.total_200);
+        updateStatusTile('deg', sc.total_degraded_200, sc.pct_degraded_200, sc.total_degraded_200 > prevStatusCounts.total_degraded_200);
+        updateStatusTile('429', sc.total_429, sc.pct_429, sc.total_429 > prevStatusCounts.total_429);
+        updateStatusTile('5xx', sc.total_5xx, sc.pct_5xx, sc.total_5xx > prevStatusCounts.total_5xx);
+        prevStatusCounts = {
+          total_200: sc.total_200,
+          total_degraded_200: sc.total_degraded_200,
+          total_429: sc.total_429,
+          total_5xx: sc.total_5xx
+        };
+      }
+
+      // Update Status Code Chart
+      if (statusChartInstance && snapshot.status_series) {
+        statusChartInstance.data.datasets[0].data = snapshot.status_series.status_200;
+        statusChartInstance.data.datasets[1].data = snapshot.status_series.status_degraded_200;
+        statusChartInstance.data.datasets[2].data = snapshot.status_series.status_429;
+        statusChartInstance.data.datasets[3].data = snapshot.status_series.status_5xx;
+        statusChartInstance.update('none');
+      }
+
+      // Ingest Recent Request Logs if not paused or hovered
+      if (snapshot.recent_requests && snapshot.recent_requests.length > 0) {
+        mergeRequestLogs(snapshot.recent_requests);
+      }
+
       // Top Blocked list
       const topList = document.getElementById('top-blocked-list');
       if (snapshot.top_blocked && snapshot.top_blocked.length > 0) {
@@ -532,6 +757,232 @@
       }
     }
 
+    function updateStatusTile(suffix, count, pct, shouldFlash) {
+      const cEl = document.getElementById(`count-status-${suffix}`);
+      const pEl = document.getElementById(`pct-status-${suffix}`);
+      const tEl = document.getElementById(`tile-status-${suffix}`);
+      if (cEl) cEl.innerText = count.toLocaleString();
+      if (pEl) pEl.innerText = `${pct.toFixed(1)}%`;
+      if (shouldFlash && tEl) {
+        tEl.classList.remove('flash-highlight');
+        void tEl.offsetWidth; // Trigger reflow
+        tEl.classList.add('flash-highlight');
+      }
+    }
+
+    // Merge recent logs safely without injection
+    function mergeRequestLogs(newRecords) {
+      const existingIds = new Set(storedRequestLogs.map(r => r.id));
+      for (const r of newRecords) {
+        if (!existingIds.has(r.id)) {
+          storedRequestLogs.unshift(r);
+          existingIds.add(r.id);
+        }
+      }
+      if (storedRequestLogs.length > 200) {
+        storedRequestLogs = storedRequestLogs.slice(0, 200);
+      }
+
+      document.getElementById('log-count-badge').innerText = `${storedRequestLogs.length} events`;
+
+      if (!logPaused && !tableHovered) {
+        renderRequestLogTable();
+      }
+    }
+
+    function renderRequestLogTable() {
+      const tbody = document.getElementById('log-table-body');
+      tbody.innerHTML = '';
+
+      let filtered = storedRequestLogs;
+      if (activeLogFilter === '200') {
+        filtered = storedRequestLogs.filter(r => r.status === 200 && r.outcome !== 'degraded');
+      } else if (activeLogFilter === 'cached') {
+        filtered = storedRequestLogs.filter(r => r.outcome === 'degraded');
+      } else if (activeLogFilter === '429') {
+        filtered = storedRequestLogs.filter(r => r.status === 429);
+      } else if (activeLogFilter === 'queued') {
+        filtered = storedRequestLogs.filter(r => r.outcome === 'queued');
+      }
+
+      const displayList = filtered.slice(0, 50);
+
+      if (displayList.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 8;
+        td.className = 'text-center py-4 text-gray-600 italic';
+        td.textContent = 'No matching requests for active filter.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+
+      displayList.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-[#1a1a2e] cursor-pointer transition select-text';
+        tr.onclick = () => openDrawer(r);
+
+        // 1. Time
+        const tdTime = document.createElement('td');
+        tdTime.className = 'py-1.5 px-2 text-gray-400 whitespace-nowrap';
+        tdTime.textContent = r.time_str || '';
+        tr.appendChild(tdTime);
+
+        // 2. Endpoint
+        const tdEp = document.createElement('td');
+        tdEp.className = 'py-1.5 px-2 font-bold truncate max-w-[120px]';
+        tdEp.textContent = `${r.method} ${r.path}`;
+        tr.appendChild(tdEp);
+
+        // 3. Status Badge
+        const tdStatus = document.createElement('td');
+        tdStatus.className = 'py-1.5 px-2 whitespace-nowrap';
+        const sSpan = document.createElement('span');
+        sSpan.className = 'px-1.5 py-0.5 rounded text-[10px] font-bold';
+        if (r.status === 200 && r.outcome === 'degraded') {
+          sSpan.className += ' bg-cyan-950 text-[#00d4ff] border border-cyan-800';
+          sSpan.textContent = '200 C';
+        } else if (r.status === 200) {
+          sSpan.className += ' bg-emerald-950 text-[#00ff88] border border-emerald-800';
+          sSpan.textContent = '200 OK';
+        } else if (r.status === 429) {
+          sSpan.className += ' bg-red-950 text-[#ff3366] border border-red-800';
+          sSpan.textContent = '429';
+        } else {
+          sSpan.className += ' bg-yellow-950 text-[#ffb800] border border-yellow-800';
+          sSpan.textContent = String(r.status);
+        }
+        tdStatus.appendChild(sSpan);
+        tr.appendChild(tdStatus);
+
+        // 4. Outcome
+        const tdOut = document.createElement('td');
+        tdOut.className = 'py-1.5 px-2 capitalize text-gray-300';
+        tdOut.textContent = r.outcome || '';
+        tr.appendChild(tdOut);
+
+        // 5. Identity
+        const tdId = document.createElement('td');
+        tdId.className = 'py-1.5 px-2 text-gray-400 truncate max-w-[100px]';
+        tdId.textContent = r.identity || '';
+        tr.appendChild(tdId);
+
+        // 6. Tier
+        const tdTier = document.createElement('td');
+        tdTier.className = 'py-1.5 px-2 text-gray-500 font-bold';
+        tdTier.textContent = r.tier || 'FREE';
+        tr.appendChild(tdTier);
+
+        // 7. Latency
+        const tdLat = document.createElement('td');
+        tdLat.className = 'py-1.5 px-2 text-gray-300 whitespace-nowrap';
+        tdLat.textContent = `${r.latency_ms}ms`;
+        tr.appendChild(tdLat);
+
+        // 8. Reason
+        const tdReason = document.createElement('td');
+        tdReason.className = 'py-1.5 px-2 text-gray-500 truncate max-w-[130px]';
+        tdReason.textContent = r.reason || '';
+        tr.appendChild(tdReason);
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function setLogFilter(filterKey) {
+      activeLogFilter = filterKey;
+      ['all', '200', 'cached', '429', 'queued'].forEach(k => {
+        const btn = document.getElementById(`filter-btn-${k}`);
+        if (btn) {
+          if (k === filterKey) {
+            btn.className = 'px-2 py-0.5 rounded font-bold transition bg-[#00ff88] text-black';
+          } else {
+            btn.className = 'px-2 py-0.5 rounded font-bold transition bg-gray-800 hover:bg-gray-700 text-gray-300';
+          }
+        }
+      });
+      renderRequestLogTable();
+    }
+
+    function toggleLogPause() {
+      logPaused = !logPaused;
+      const btn = document.getElementById('btn-pause-log');
+      if (logPaused) {
+        btn.innerText = '▶ RESUME';
+        btn.className = 'text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-[#ffb800] text-black transition';
+      } else {
+        btn.innerText = '⏸ PAUSE';
+        btn.className = 'text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition';
+        renderRequestLogTable();
+      }
+    }
+
+    function onLogTableHover(isHovered) {
+      tableHovered = isHovered;
+      if (!isHovered && !logPaused) {
+        renderRequestLogTable();
+      }
+    }
+
+    function toggleLogCollapse() {
+      logCollapsed = !logCollapsed;
+      const content = document.getElementById('log-section-content');
+      const icon = document.getElementById('log-collapse-icon');
+      if (logCollapsed) {
+        content.classList.add('hidden');
+        icon.innerText = '▶';
+      } else {
+        content.classList.remove('hidden');
+        icon.innerText = '▼';
+      }
+    }
+
+    // Detail Drawer Inspection for Request Records
+    function openDrawer(record) {
+      const drawer = document.getElementById('detail-drawer');
+      const backdrop = document.getElementById('drawer-backdrop');
+
+      document.getElementById('drawer-subtitle').textContent = `Timestamp: ${record.time_str} (${record.ts})`;
+      document.getElementById('drawer-endpoint').textContent = `${record.method} ${record.path}`;
+      document.getElementById('drawer-cost').textContent = `${record.cost} unit${record.cost > 1 ? 's' : ''}`;
+      document.getElementById('drawer-identity').textContent = record.identity;
+      document.getElementById('drawer-tier').textContent = record.tier;
+      document.getElementById('drawer-latency').textContent = `Elapsed: ${record.latency_ms}ms`;
+      document.getElementById('drawer-reason').textContent = record.reason;
+
+      const sBadge = document.getElementById('drawer-status-badge');
+      sBadge.textContent = `HTTP ${record.status}`;
+      if (record.status === 200 && record.outcome === 'degraded') {
+        sBadge.className = 'px-2 py-0.5 rounded font-bold bg-cyan-950 text-[#00d4ff] border border-cyan-800';
+      } else if (record.status === 200) {
+        sBadge.className = 'px-2 py-0.5 rounded font-bold bg-emerald-950 text-[#00ff88] border border-emerald-800';
+      } else if (record.status === 429) {
+        sBadge.className = 'px-2 py-0.5 rounded font-bold bg-red-950 text-[#ff3366] border border-red-800';
+      } else {
+        sBadge.className = 'px-2 py-0.5 rounded font-bold bg-yellow-950 text-[#ffb800] border border-yellow-800';
+      }
+
+      document.getElementById('drawer-outcome-badge').textContent = `Outcome: ${record.outcome}`;
+
+      const hdrsEl = document.getElementById('drawer-headers');
+      if (record.headers && Object.keys(record.headers).length > 0) {
+        hdrsEl.textContent = JSON.stringify(record.headers, null, 2);
+      } else {
+        hdrsEl.textContent = "No extra response headers recorded.";
+      }
+
+      backdrop.classList.remove('hidden');
+      drawer.classList.remove('translate-x-full');
+    }
+
+    function closeDrawer() {
+      const drawer = document.getElementById('detail-drawer');
+      const backdrop = document.getElementById('drawer-backdrop');
+      drawer.classList.add('translate-x-full');
+      backdrop.classList.add('hidden');
+    }
+
     function updateSessionBadge(sessionId) {
       const badge = document.getElementById('badge-session-id');
       if (badge && sessionId) {
@@ -547,11 +998,11 @@
         if (res.ok) {
           const data = await res.json();
           currentSessionId = data.session_id;
+          storedRequestLogs = [];
           updateSessionBadge(data.session_id);
+          renderRequestLogTable();
           showToast(`Fresh sandbox created: ${data.session_id.substring(0, 8)}...`);
-          // Re-fetch control state for new session
           await loadSessionState();
-          // Reset WebSocket or pollers
           if (ws) {
             ws.close();
           } else {
@@ -719,7 +1170,6 @@
     }
 
     async function startSim(pattern) {
-      // 1. Notify control API for this session
       try {
         await fetch(`/control/simulate/${pattern}`, {
           method: 'POST',
@@ -727,7 +1177,6 @@
         });
       } catch (err) {}
 
-      // 2. Run client-side simulator directly in browser
       let rps = 5;
       if (pattern === 'ddos') rps = 120;
       else if (pattern === 'exhaustion') rps = 30;
@@ -796,7 +1245,6 @@
     window.addEventListener('DOMContentLoaded', async () => {
       initChart();
 
-      // Retrieve or establish session
       try {
         const sRes = await fetch('/session/current');
         if (sRes.ok) {

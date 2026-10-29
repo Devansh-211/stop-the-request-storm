@@ -42,6 +42,7 @@ EXEMPT_PATHS: Set[str] = {
     "/control/state",
     "/control/config",
     "/control/metrics",
+    "/control/log",
     "/control/simulate/stop",
     "/control/admin/sessions",
 }

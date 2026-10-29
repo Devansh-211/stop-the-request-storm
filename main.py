@@ -244,15 +244,19 @@ async def update_control_config(
 
 
 @app.get("/control/metrics")
-async def get_metrics_snapshot(session: SessionState = Depends(get_current_session)):
-    """Polling endpoint for telemetry of caller's session sandbox."""
+async def get_metrics_snapshot(
+    since: Optional[float] = None,
+    session: SessionState = Depends(get_current_session)
+):
+    """Polling endpoint for telemetry and recent request logs of caller's session sandbox."""
     active_keys = 0
     if session.store and isinstance(session.store, MemoryStorage):
         active_keys = len(session.store._tb_data) + len(session.store._sw_data) + len(session.store._lb_data)
 
     snapshot = session.metrics.get_snapshot(
         store_backend=STORE_BACKEND,
-        active_buckets_count=active_keys
+        active_buckets_count=active_keys,
+        since_ts=since
     )
     snapshot["session_id"] = session.session_id
     snapshot["deploy_target"] = DEPLOY_TARGET
@@ -262,6 +266,34 @@ async def get_metrics_snapshot(session: SessionState = Depends(get_current_sessi
     )
     snapshot["simulation_pattern"] = session.simulator_pattern
     return snapshot
+
+
+@app.get("/control/log")
+async def get_request_log(
+    limit: int = 50,
+    status: Optional[int] = None,
+    outcome: Optional[str] = None,
+    session: SessionState = Depends(get_current_session)
+):
+    """Filtered request log for caller's isolated session sandbox."""
+    records = session.metrics.get_filtered_log(limit=limit, status=status, outcome=outcome)
+    return {
+        "session_id": session.session_id,
+        "count": len(records),
+        "requests": records
+    }
+
+
+@app.post("/control/simulate/stop")
+async def stop_simulation(session: SessionState = Depends(get_current_session)):
+    """Halt any active background traffic simulation for caller's session."""
+    was_running = session.simulator_task is not None and not session.simulator_task.done()
+    await session.cancel_simulator()
+    return {
+        "status": "stopped" if was_running else "idle",
+        "session_id": session.session_id,
+        "message": "Simulation halted" if was_running else "No active simulation"
+    }
 
 
 @app.post("/control/simulate/{pattern}")
@@ -274,6 +306,9 @@ async def trigger_simulation(
     Launch real loopback attack simulation traffic scoped strictly to caller's session:
     pattern: normal | ddos | exhaustion | botnet
     """
+    if pattern == "stop":
+        return await stop_simulation(session=session)
+
     # Enforce abuse limits
     duration = max(5, min(60, duration))
     if pattern not in ("normal", "ddos", "exhaustion", "botnet"):
@@ -305,18 +340,6 @@ async def trigger_simulation(
         "session_id": session.session_id,
         "pattern": pattern,
         "duration_seconds": duration
-    }
-
-
-@app.post("/control/simulate/stop")
-async def stop_simulation(session: SessionState = Depends(get_current_session)):
-    """Halt any active background traffic simulation for caller's session."""
-    was_running = session.simulator_task is not None and not session.simulator_task.done()
-    await session.cancel_simulator()
-    return {
-        "status": "stopped" if was_running else "idle",
-        "session_id": session.session_id,
-        "message": "Simulation halted" if was_running else "No active simulation"
     }
 
 

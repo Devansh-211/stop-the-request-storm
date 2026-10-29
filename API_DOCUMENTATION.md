@@ -221,6 +221,45 @@ All control endpoints automatically operate on the caller's isolated session san
     "top_blocked": [
       {"identity": "198.51.100.14", "count": 240},
       {"identity": "198.51.100.15", "count": 215}
+    "status_counts": {
+      "total_200": 150,
+      "total_degraded_200": 340,
+      "total_429": 85,
+      "total_5xx": 0,
+      "total_all": 575,
+      "pct_200": 26.1,
+      "pct_degraded_200": 59.1,
+      "pct_429": 14.8,
+      "pct_5xx": 0.0
+    },
+    "status_series": {
+      "timestamps": [1793299930, "...", 1793300050],
+      "status_200": [0, 0, 15, "..."],
+      "status_degraded_200": [0, 0, 105, "..."],
+      "status_429": [0, 0, 20, "..."],
+      "status_5xx": [0, 0, 0, "..."]
+    },
+    "recent_requests": [
+      {
+        "id": "1793300050123-1",
+        "ts": 1793300050.123,
+        "time_str": "00:15:30.123",
+        "method": "POST",
+        "path": "/api/heavy-compute",
+        "status": 429,
+        "outcome": "blocked",
+        "identity": "198.51.*.*",
+        "tier": "FREE",
+        "latency_ms": 1.25,
+        "cost": 5,
+        "reason": "token_bucket_exhausted",
+        "retry_after_s": 3,
+        "headers": {
+          "retry-after": "3",
+          "x-ratelimit-limit": "10",
+          "x-ratelimit-remaining": "0"
+        }
+      }
     ],
     "series": {
       "timestamps": [1793299930, "...", 1793300050],
@@ -229,6 +268,44 @@ All control endpoints automatically operate on the caller's isolated session san
       "queued": [0, 0, 0, "..."],
       "blocked": [0, 0, 20, "..."]
     }
+  }
+  ```
+
+---
+
+### `GET /control/log`
+- **Description:** Returns filtered recent request log records for the caller's session sandbox.
+- **Query Parameters:**
+  - `limit` *(optional, int)*: Maximum records to return (1 to 200, default 50).
+  - `status` *(optional, int)*: Filter by HTTP status code (e.g. `200`, `429`).
+  - `outcome` *(optional, string)*: Filter by outcome (`accepted`, `degraded`, `queued`, `blocked`).
+- **Response (200 OK):**
+  ```json
+  {
+    "session_id": "vX8r-9Q2_kLm3N7p",
+    "count": 2,
+    "requests": [
+      {
+        "id": "1793300050123-1",
+        "ts": 1793300050.123,
+        "time_str": "00:15:30.123",
+        "method": "POST",
+        "path": "/api/heavy-compute",
+        "status": 429,
+        "outcome": "blocked",
+        "identity": "198.51.*.*",
+        "tier": "FREE",
+        "latency_ms": 1.25,
+        "cost": 5,
+        "reason": "token_bucket_exhausted",
+        "retry_after_s": 3,
+        "headers": {
+          "retry-after": "3",
+          "x-ratelimit-limit": "10",
+          "x-ratelimit-remaining": "0"
+        }
+      }
+    ]
   }
   ```
 

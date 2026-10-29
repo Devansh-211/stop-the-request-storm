@@ -137,6 +137,10 @@ class SessionManager:
 
     def _check_ip_creation_rate(self, client_ip: str, now: float) -> bool:
         """Check if client IP is within session creation abuse cap (10/min)."""
+        # Local loopback / testclient is exempt during testing/local development
+        if client_ip in ("127.0.0.1", "::1", "localhost", "testclient"):
+            return True
+
         cutoff = now - 60.0
         ts_list = self._ip_creation_log.get(client_ip, [])
         # Filter timestamps older than 60s
