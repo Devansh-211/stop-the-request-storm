@@ -26,6 +26,35 @@ Every browser session is sandboxed into its own isolated defense environment: ea
 
 ---
 
+## 📖 API Summary & Endpoint Map
+
+> 📘 **Full documentation:** See the complete reference guide with schemas and sample payloads in [API_DOCUMENTATION.md](file:///a:/Cybersec/API_DOCUMENTATION.md).
+
+### 1. Protected Upstream APIs
+Interception, metering, and rate-limiting enforcement via `ShieldMiddleware`:
+- `GET /api/ping`: Lightweight latency probe (`Cost: 1 token`).
+- `GET /api/data`: Analytics read route (`Cost: 2 tokens`). Supports Stale-While-Revalidate graceful degradation (`200 Cached-Fallback`).
+- `POST /api/heavy-compute`: Resource-intensive compute task (`Cost: 5 tokens`). Never degraded; throttled calls return `429 Too Many Requests`.
+
+### 2. Session Sandbox Lifecycle
+- `GET /session/current`: Returns active session token, store backend, and deployment mode.
+- `POST /session/new`: Discards the existing sandbox and provisions a fresh isolated state with a new cookie.
+
+### 3. Control & Defense Tuning (Session-Scoped)
+- `GET /control/state`: Live defense configuration for the active session.
+- `POST /control/config`: Dynamic hot-reloading of algorithms, capacities, and storm thresholds.
+- `GET /control/metrics`: Telemetry snapshot with p50/p95 latencies, RPS, success/block rates, and 120s time-series arrays.
+- `GET /control/admin/sessions`: Administrative server overview of all active sandboxes (requires `ADMIN_TOKEN`).
+
+### 4. Attack Simulator (Session-Scoped)
+- `POST /control/simulate/{pattern}`: Initiates controlled loopback attack storms (`normal`, `ddos`, `exhaustion`, `botnet`).
+- `POST /control/simulate/stop`: Terminates the background attack simulation.
+
+### 5. Telemetry Stream
+- `WS /ws/telemetry`: 500ms push stream delivering real-time telemetry to connected dashboard war rooms. Automatic fallback to 500ms HTTP polling on serverless platforms.
+
+---
+
 ## 🚀 Quickstart (Local Run)
 
 ### 1. Install Dependencies
