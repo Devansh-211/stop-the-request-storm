@@ -291,6 +291,17 @@ class RuntimeShieldMiddleware:
             _SHARED_SHIELD_MIDDLEWARE.sw_limiter.store = STATE_STORE
             _SHARED_SHIELD_MIDDLEWARE.lb_limiter.store = STATE_STORE
 
+        # Normalize path when rewritten by Vercel serverless function
+        if scope.get("type") == "http":
+            path = scope.get("path", "")
+            for prefix in ("/api/index.py", "/api/index"):
+                if path == prefix:
+                    scope["path"] = "/"
+                    break
+                elif path.startswith(prefix + "/"):
+                    scope["path"] = path[len(prefix):]
+                    break
+
         await _SHARED_SHIELD_MIDDLEWARE(scope, receive, send)
 
 
