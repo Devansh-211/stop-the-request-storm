@@ -528,20 +528,111 @@
       }
     }
 
+    // Browser-Side Traffic Simulator (executes directly from client, guaranteed to work in Serverless / Vercel)
+    let clientSimRunning = false;
+    let clientSimTimer = null;
+    let clientSimEndTime = 0;
+    const DEMO_KEYS = ["free-demo-key", "pro-demo-key", "ent-demo-key"];
+
+    async function sendClientSimRequest(pattern) {
+      if (!clientSimRunning) return;
+      if (Date.now() >= clientSimEndTime) {
+        stopSim();
+        return;
+      }
+
+      let url = '/api/data';
+      let method = 'GET';
+      let headers = { 'X-Sim-Class': 'attack' };
+      let body = null;
+
+      if (pattern === 'normal') {
+        url = Math.random() < 0.5 ? '/api/ping' : '/api/data';
+        headers['X-Sim-Class'] = 'legit';
+        if (Math.random() < 0.4) {
+          headers['X-API-Key'] = DEMO_KEYS[Math.floor(Math.random() * DEMO_KEYS.length)];
+        } else if (Math.random() < 0.7) {
+          headers['X-Forwarded-For'] = `203.0.113.${Math.floor(Math.random() * 40) + 10}`;
+        }
+      } else if (pattern === 'ddos') {
+        const ddosIps = ['198.51.100.14', '198.51.100.15', '198.51.100.16'];
+        url = '/api/data';
+        headers['X-Forwarded-For'] = ddosIps[Math.floor(Math.random() * ddosIps.length)];
+      } else if (pattern === 'exhaustion') {
+        url = '/api/heavy-compute';
+        method = 'POST';
+        headers['Content-Type'] = 'application/json';
+        headers['X-Forwarded-For'] = `192.0.2.${Math.floor(Math.random() * 250) + 1}`;
+        body = JSON.stringify({ task: 'heavy_stress_payload' });
+      } else if (pattern === 'botnet') {
+        url = Math.random() < 0.5 ? '/api/ping' : '/api/data';
+        const randIp = `${Math.floor(Math.random() * 200) + 11}.${Math.floor(Math.random() * 250) + 1}.${Math.floor(Math.random() * 250) + 1}.${Math.floor(Math.random() * 250) + 1}`;
+        headers['X-Forwarded-For'] = randIp;
+        if (Math.random() < 0.5) {
+          headers['X-API-Key'] = `bot-${Math.floor(Math.random() * 1000)}`;
+        }
+      }
+
+      try {
+        fetch(url, { method, headers, body }).catch(() => {});
+      } catch (e) {}
+    }
+
+    function startClientSimLoop(pattern, rps, durationSec = 20) {
+      stopSim();
+      clientSimRunning = true;
+      clientSimEndTime = Date.now() + (durationSec * 1000);
+
+      const simStatus = document.getElementById('sim-status-indicator');
+      if (simStatus) {
+        simStatus.innerText = 'ATTACK ACTIVE';
+        simStatus.className = 'text-xs px-2 py-0.5 rounded bg-red-950 text-[#ff3366] border border-red-800 animate-pulse';
+      }
+
+      // Interval per request in ms
+      const intervalMs = Math.max(10, Math.floor(1000 / rps));
+      const batchSize = rps > 100 ? 5 : (rps > 40 ? 2 : 1);
+
+      clientSimTimer = setInterval(() => {
+        if (!clientSimRunning || Date.now() >= clientSimEndTime) {
+          stopSim();
+          return;
+        }
+        for (let b = 0; b < batchSize; b++) {
+          sendClientSimRequest(pattern);
+        }
+      }, intervalMs * batchSize);
+    }
+
     async function startSim(pattern) {
+      // 1. Notify control API
       try {
         await fetch(`/control/simulate/${pattern}`, { method: 'POST' });
-      } catch (err) {
-        console.error("Simulation trigger failed", err);
-      }
+      } catch (err) {}
+
+      // 2. Run client-side simulator directly in the browser (essential for Serverless/Vercel)
+      let rps = 5;
+      if (pattern === 'ddos') rps = 120;
+      else if (pattern === 'exhaustion') rps = 30;
+      else if (pattern === 'botnet') rps = 150;
+
+      startClientSimLoop(pattern, rps, 20);
     }
 
     async function stopSim() {
+      clientSimRunning = false;
+      if (clientSimTimer) {
+        clearInterval(clientSimTimer);
+        clientSimTimer = null;
+      }
+      const simStatus = document.getElementById('sim-status-indicator');
+      if (simStatus) {
+        simStatus.innerText = 'IDLE';
+        simStatus.className = 'text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400';
+      }
       try {
         await fetch('/control/simulate/stop', { method: 'POST' });
-      } catch (err) {
-        console.error("Simulation stop failed", err);
-      }
+      } catch (err) {}
     }
 
     // Startup Init
