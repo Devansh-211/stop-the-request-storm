@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WAR ROOM // API Under Attack — Stop The Request Storm</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com/3.4.1"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
+  <!-- Fallback & Dark Cyberpunk Styling -->
+  <style>
+    :root {
+      --bg-dark: #0a0a0f;
+      --card-bg: #12121c;
+      --healthy: #00ff88;
+      --blocked: #ff3366;
+      --degraded: #00d4ff;
+      --queued: #ffb800;
+      --border-dark: #1e1e2f;
+    }
+    body {
+      background-color: var(--bg-dark);
+      color: #e2e8f0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    .panel {
+      background: rgba(18, 18, 28, 0.85);
+      border: 1px solid var(--border-dark);
+      backdrop-filter: blur(12px);
+    }
+    .neon-border-green {
+      box-shadow: 0 0 15px rgba(0, 255, 136, 0.25);
+      border-color: #00ff88;
+    }
+    .neon-border-red {
+      box-shadow: 0 0 15px rgba(255, 51, 102, 0.35);
+      border-color: #ff3366;
+    }
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0a0a0f;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #27273a;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col p-4 md:p-6 select-none">
+
+  <!-- Header -->
+  <header class="flex flex-wrap items-center justify-between pb-4 border-b border-[#1e1e2f] mb-6">
+    <div class="flex items-center space-x-3">
+      <div class="w-4 h-4 rounded-full bg-[#00ff88] animate-pulse"></div>
+      <h1 class="text-xl md:text-2xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-[#00ff88] via-[#00d4ff] to-[#ff3366]">
+        SHIELD // WAR ROOM
+      </h1>
+      <span class="text-xs px-2 py-0.5 rounded bg-[#1e1e2f] text-gray-400 font-mono">TEAM 9 GATEWAY</span>
+    </div>
+    
+    <div class="flex items-center space-x-6 text-sm">
+      <div class="flex items-center space-x-2">
+        <span class="text-gray-400">ENGINE:</span>
+        <span id="badge-store" class="px-2 py-0.5 rounded text-xs font-bold uppercase bg-blue-950 text-[#00d4ff] border border-blue-800">
+          MEMORY
+        </span>
+      </div>
+      <div class="flex items-center space-x-2">
+        <span class="text-gray-400">STORM:</span>
+        <span id="badge-storm" class="px-2 py-0.5 rounded text-xs font-bold uppercase bg-gray-800 text-gray-400">
+          QUIET
+        </span>
+      </div>
+      <div class="flex items-center space-x-2">
+        <span class="text-gray-400">SHIELD:</span>
+        <span id="badge-shield-status" class="px-2.5 py-0.5 rounded text-xs font-bold uppercase bg-emerald-950 text-[#00ff88] border border-emerald-800">
+          ARMED
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <!-- 3-Panel Main Layout -->
+  <main class="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-grow">
+
+    <!-- LEFT PANEL: Attack Simulator (3 cols) -->
+    <section class="lg:col-span-3 panel rounded-xl p-5 flex flex-col justify-between">
+      <div>
+        <div class="flex items-center justify-between mb-4 border-b border-[#1e1e2f] pb-2">
+          <h2 class="text-sm font-bold tracking-wider text-gray-300 uppercase">⚡ Attack Simulator</h2>
+          <span id="sim-status-indicator" class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">IDLE</span>
+        </div>
+
+        <p class="text-xs text-gray-400 mb-5 leading-relaxed">
+          Inject synthetic traffic flows into the gateway to stress test limiter strategies, concurrency bottlenecks, and degraded fallbacks.
+        </p>
+
+        <div class="space-y-3">
+          <button id="btn-sim-normal" onclick="startSim('normal')" class="w-full py-2.5 px-4 rounded bg-[#151522] hover:bg-[#1a1a2e] border border-gray-800 hover:border-[#00ff88] text-left transition flex items-center justify-between group">
+            <div>
+              <div class="text-xs font-bold text-gray-200 group-hover:text-[#00ff88]">Normal Traffic</div>
+              <div class="text-[10px] text-gray-500">5 RPS • Mixed Read APIs</div>
+            </div>
+            <span class="text-xs text-gray-600 group-hover:text-[#00ff88]">▶</span>
+          </button>
+
+          <button id="btn-sim-ddos" onclick="startSim('ddos')" class="w-full py-2.5 px-4 rounded bg-[#151522] hover:bg-[#1a1a2e] border border-gray-800 hover:border-[#ff3366] text-left transition flex items-center justify-between group">
+            <div>
+              <div class="text-xs font-bold text-gray-200 group-hover:text-[#ff3366]">DDoS Burst Flood</div>
+              <div class="text-[10px] text-gray-500">150 RPS • 1-3 IPs • GET /api/data</div>
+            </div>
+            <span class="text-xs text-gray-600 group-hover:text-[#ff3366]">▶</span>
+          </button>
+
+          <button id="btn-sim-exhaustion" onclick="startSim('exhaustion')" class="w-full py-2.5 px-4 rounded bg-[#151522] hover:bg-[#1a1a2e] border border-gray-800 hover:border-[#ffb800] text-left transition flex items-center justify-between group">
+            <div>
+              <div class="text-xs font-bold text-gray-200 group-hover:text-[#ffb800]">Heavy Exhaustion</div>
+              <div class="text-[10px] text-gray-500">40 RPS • POST /api/heavy-compute</div>
+            </div>
+            <span class="text-xs text-gray-600 group-hover:text-[#ffb800]">▶</span>
+          </button>
+
+          <button id="btn-sim-botnet" onclick="startSim('botnet')" class="w-full py-2.5 px-4 rounded bg-[#151522] hover:bg-[#1a1a2e] border border-gray-800 hover:border-[#00d4ff] text-left transition flex items-center justify-between group">
+            <div>
+              <div class="text-xs font-bold text-gray-200 group-hover:text-[#00d4ff]">Botnet Wave</div>
+              <div class="text-[10px] text-gray-500">200 RPS • 500+ Spoofed IPs • Invalid Keys</div>
+            </div>
+            <span class="text-xs text-gray-600 group-hover:text-[#00d4ff]">▶</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="pt-6 border-t border-[#1e1e2f] mt-6">
+        <button id="btn-sim-stop" onclick="stopSim()" class="w-full py-2.5 rounded bg-red-950/40 hover:bg-red-900/60 border border-red-800/80 text-xs font-bold text-red-300 transition">
+          🛑 STOP ALL SIMULATIONS
+        </button>
+      </div>
+    </section>
+
+    <!-- CENTER PANEL: Live Telemetry & Charts (6 cols) -->
+    <section class="lg:col-span-6 flex flex-col space-y-6">
+      
+      <!-- Key Metric Tiles -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div class="panel rounded-xl p-3 text-center border-t-2 border-t-[#00ff88]">
+          <div class="text-[10px] uppercase text-gray-400 font-bold tracking-wider">Current RPS</div>
+          <div id="stat-rps" class="text-2xl font-black text-gray-100 mt-1">0</div>
+        </div>
+        <div class="panel rounded-xl p-3 text-center border-t-2 border-t-[#00d4ff]">
+          <div class="text-[10px] uppercase text-gray-400 font-bold tracking-wider">p95 Latency</div>
+          <div id="stat-p95" class="text-2xl font-black text-[#00d4ff] mt-1">0ms</div>
+        </div>
+        <div class="panel rounded-xl p-3 text-center border-t-2 border-t-[#00ff88]">
+          <div class="text-[10px] uppercase text-gray-400 font-bold tracking-wider">Legit Success</div>
+          <div id="stat-legit-pct" class="text-2xl font-black text-[#00ff88] mt-1">100%</div>
+        </div>
+        <div class="panel rounded-xl p-3 text-center border-t-2 border-t-[#ff3366]">
+          <div class="text-[10px] uppercase text-gray-400 font-bold tracking-wider">Attack Block</div>
+          <div id="stat-attack-pct" class="text-2xl font-black text-[#ff3366] mt-1">0%</div>
+        </div>
+      </div>
+
+      <!-- Time Series Chart -->
+      <div class="panel rounded-xl p-4 flex-grow flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-xs font-bold tracking-wider text-gray-300 uppercase">Real-Time Request Flow (120s)</h3>
+          <div class="flex space-x-3 text-[10px]">
+            <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#00ff88] mr-1"></span> Accepted</span>
+            <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#00d4ff] mr-1"></span> Degraded</span>
+            <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#ffb800] mr-1"></span> Queued</span>
+            <span class="flex items-center"><span class="w-2 h-2 rounded-full bg-[#ff3366] mr-1"></span> Blocked</span>
+          </div>
+        </div>
+        <div class="flex-grow min-h-[220px] relative">
+          <canvas id="trafficChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Bottom split: Top Blocked + System Diagnostics -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="panel rounded-xl p-4">
+          <div class="text-xs font-bold tracking-wider text-gray-400 uppercase mb-3">Top Blocked Targets</div>
+          <div id="top-blocked-list" class="space-y-1.5 text-xs text-gray-400 max-h-24 overflow-y-auto">
+            <div class="text-gray-600 italic text-[11px]">No active blocks recorded.</div>
+          </div>
+        </div>
+
+        <div class="panel rounded-xl p-4 flex flex-col justify-between">
+          <div class="text-xs font-bold tracking-wider text-gray-400 uppercase mb-2">Defense System Status</div>
+          <div class="text-xs space-y-1 text-gray-300">
+            <div class="flex justify-between"><span>Active Buckets:</span> <span id="stat-buckets" class="font-bold text-gray-100">0</span></div>
+            <div class="flex justify-between"><span>p50 Latency:</span> <span id="stat-p50" class="font-bold text-gray-100">0ms</span></div>
+            <div class="flex justify-between"><span>Upstream Cap:</span> <span id="stat-cap-val" class="font-bold text-gray-100">60 RPS</span></div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- RIGHT PANEL: Defense Controller (3 cols) -->
+    <section class="lg:col-span-3 panel rounded-xl p-5 flex flex-col justify-between">
+      <div>
+        <div class="flex items-center justify-between mb-4 border-b border-[#1e1e2f] pb-2">
+          <h2 class="text-sm font-bold tracking-wider text-gray-300 uppercase">🛡️ Defense Controller</h2>
+          <span class="text-[10px] text-gray-500 font-mono">LIVE TUNING</span>
+        </div>
+
+        <!-- Master Switch -->
+        <div class="mb-5">
+          <label class="text-xs font-bold text-gray-300 block mb-2 uppercase">Master Shield Switch</label>
+          <button id="btn-toggle-shield" onclick="toggleShield()" class="w-full py-3 rounded-lg font-black tracking-widest text-sm transition uppercase bg-emerald-950 text-[#00ff88] border border-[#00ff88] neon-border-green">
+            SHIELD ACTIVE
+          </button>
+        </div>
+
+        <!-- Algorithm Selector -->
+        <div class="mb-5">
+          <label class="text-xs font-bold text-gray-300 block mb-2 uppercase">Limiter Strategy</label>
+          <select id="sel-algo" onchange="updateDefenseParam('algorithm', this.value)" class="w-full py-2 px-3 rounded bg-[#151522] border border-[#1e1e2f] text-xs text-gray-200 focus:outline-none focus:border-[#00ff88]">
+            <option value="token_bucket">Token Bucket (Burst & Refill)</option>
+            <option value="sliding_window">Sliding Window Counter</option>
+            <option value="leaky_bucket">Leaky Bucket / Queue Shaper</option>
+          </select>
+        </div>
+
+        <!-- Sliders -->
+        <div class="space-y-4 mb-5">
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-gray-400">Base Capacity:</span>
+              <span id="lbl-capacity" class="font-bold text-[#00ff88]">10</span>
+            </div>
+            <input type="range" id="slider-capacity" min="2" max="100" value="10" oninput="onSliderChange('base_capacity', this.value, 'lbl-capacity')" class="w-full accent-[#00ff88]">
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-gray-400">Base Refill/Leak Rate (RPS):</span>
+              <span id="lbl-refill" class="font-bold text-[#00ff88]">1.0</span>
+            </div>
+            <input type="range" id="slider-refill" min="0.2" max="50" step="0.2" value="1.0" oninput="onSliderChange('base_refill_rate', this.value, 'lbl-refill')" class="w-full accent-[#00ff88]">
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-gray-400">Max Upstream Cap (RPS):</span>
+              <span id="lbl-cap" class="font-bold text-[#00ff88]">60</span>
+            </div>
+            <input type="range" id="slider-cap" min="10" max="300" value="60" oninput="onSliderChange('max_upstream_rps', this.value, 'lbl-cap')" class="w-full accent-[#00ff88]">
+          </div>
+        </div>
+
+        <!-- Toggles -->
+        <div class="space-y-3 pt-3 border-t border-[#1e1e2f]">
+          <label class="flex items-center justify-between text-xs cursor-pointer">
+            <span class="text-gray-300">Graceful Degradation (SWR)</span>
+            <input type="checkbox" id="chk-degradation" onchange="updateDefenseParam('degradation_mode', this.checked)" class="accent-[#00d4ff] w-4 h-4 rounded" checked>
+          </label>
+
+          <label class="flex items-center justify-between text-xs cursor-pointer">
+            <span class="text-gray-300">Adaptive Storm Mode</span>
+            <input type="checkbox" id="chk-storm" onchange="updateDefenseParam('storm_mode_enabled', this.checked)" class="accent-[#ff3366] w-4 h-4 rounded" checked>
+          </label>
+        </div>
+
+      </div>
+
+      <div class="text-[10px] text-gray-500 text-center pt-4 border-t border-[#1e1e2f] mt-4 font-mono">
+        CHANGES APPLIED LIVE VIA CONTROL API
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Client-side Logic -->
+  <script>
+    let activeConfig = {
+      shield_enabled: true,
+      algorithm: "token_bucket",
+      base_capacity: 10,
+      base_refill_rate: 1.0,
+      max_upstream_rps: 60,
+      degradation_mode: true,
+      storm_mode_enabled: true
+    };
+
+    let chartInstance = null;
+    let debounceTimer = null;
+
+    // Initialize Chart.js
+    function initChart() {
+      const ctx = document.getElementById('trafficChart').getContext('2d');
+      chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: Array(120).fill(''),
+          datasets: [
+            {
+              label: 'Accepted',
+              data: Array(120).fill(0),
+              borderColor: '#00ff88',
+              backgroundColor: 'rgba(0, 255, 136, 0.1)',
+              borderWidth: 2,
+              tension: 0.2,
+              fill: true,
+              pointRadius: 0
+            },
+            {
+              label: 'Degraded',
+              data: Array(120).fill(0),
+              borderColor: '#00d4ff',
+              backgroundColor: 'rgba(0, 212, 255, 0.1)',
+              borderWidth: 1.5,
+              tension: 0.2,
+              fill: true,
+              pointRadius: 0
+            },
+            {
+              label: 'Queued',
+              data: Array(120).fill(0),
+              borderColor: '#ffb800',
+              backgroundColor: 'rgba(255, 184, 0, 0.1)',
+              borderWidth: 1.5,
+              tension: 0.2,
+              fill: true,
+              pointRadius: 0
+            },
+            {
+              label: 'Blocked',
+              data: Array(120).fill(0),
+              borderColor: '#ff3366',
+              backgroundColor: 'rgba(255, 51, 102, 0.15)',
+              borderWidth: 2,
+              tension: 0.2,
+              fill: true,
+              pointRadius: 0
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          scales: {
+            x: { display: false },
+            y: {
+              grid: { color: 'rgba(255, 255, 255, 0.05)' },
+              ticks: { color: '#64748b', font: { family: 'monospace', size: 10 } },
+              beginAtZero: true
+            }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    }
+
+    // Connect WebSocket Telemetry Feed with automatic Polling fallback (essential for Serverless/Vercel)
+    let pollingInterval = null;
+
+    function startPollingFallback() {
+      if (pollingInterval) return;
+      pollingInterval = setInterval(async () => {
+        try {
+          const res = await fetch('/control/metrics');
+          if (res.ok) {
+            const data = await res.json();
+            updateUI(data);
+          }
+        } catch (e) {}
+      }, 1000);
+    }
+
+    function stopPollingFallback() {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+      }
+    }
+
+    function connectTelemetryWebSocket() {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/telemetry`;
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          stopPollingFallback();
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            updateUI(data);
+          } catch (err) {
+            console.error("Telemetry parse error", err);
+          }
+        };
+
+        ws.onclose = () => {
+          startPollingFallback();
+          setTimeout(connectTelemetryWebSocket, 5000);
+        };
+
+        ws.onerror = () => {
+          startPollingFallback();
+          ws.close();
+        };
+      } catch (err) {
+        startPollingFallback();
+      }
+    }
+
+    // Update Dashboard UI from Telemetry Snapshot
+    function updateUI(snapshot) {
+      document.getElementById('stat-rps').innerText = snapshot.current_rps;
+      document.getElementById('stat-p95').innerText = `${snapshot.p95_latency_ms}ms`;
+      document.getElementById('stat-p50').innerText = `${snapshot.p50_latency_ms}ms`;
+      document.getElementById('stat-legit-pct').innerText = `${snapshot.legit_success_pct}%`;
+      document.getElementById('stat-attack-pct').innerText = `${snapshot.attack_block_pct}%`;
+      document.getElementById('stat-buckets').innerText = snapshot.active_buckets;
+      document.getElementById('badge-store').innerText = snapshot.store_backend;
+
+      // Storm badge
+      const stormBadge = document.getElementById('badge-storm');
+      if (snapshot.storm_mode) {
+        stormBadge.innerText = 'STORM ACTIVE';
+        stormBadge.className = 'px-2 py-0.5 rounded text-xs font-bold uppercase bg-red-950 text-[#ff3366] border border-red-800 animate-pulse';
+      } else {
+        stormBadge.innerText = 'QUIET';
+        stormBadge.className = 'px-2 py-0.5 rounded text-xs font-bold uppercase bg-gray-800 text-gray-400';
+      }
+
+      // Simulation indicator
+      const simStatus = document.getElementById('sim-status-indicator');
+      if (snapshot.simulation_active) {
+        simStatus.innerText = 'ATTACK ACTIVE';
+        simStatus.className = 'text-xs px-2 py-0.5 rounded bg-red-950 text-[#ff3366] border border-red-800 animate-pulse';
+      } else {
+        simStatus.innerText = 'IDLE';
+        simStatus.className = 'text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400';
+      }
+
+      // Update Chart Series
+      if (chartInstance && snapshot.series) {
+        chartInstance.data.datasets[0].data = snapshot.series.accepted;
+        chartInstance.data.datasets[1].data = snapshot.series.degraded;
+        chartInstance.data.datasets[2].data = snapshot.series.queued;
+        chartInstance.data.datasets[3].data = snapshot.series.blocked;
+        chartInstance.update('none');
+      }
+
+      // Top Blocked list
+      const topList = document.getElementById('top-blocked-list');
+      if (snapshot.top_blocked && snapshot.top_blocked.length > 0) {
+        topList.innerHTML = '';
+        snapshot.top_blocked.forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'flex justify-between items-center bg-[#151522] px-2 py-1 rounded';
+          const identSpan = document.createElement('span');
+          identSpan.className = 'font-mono text-[11px] text-gray-300 truncate max-w-[160px]';
+          identSpan.textContent = String(item.identity || '');
+          const countSpan = document.createElement('span');
+          countSpan.className = 'text-[10px] text-[#ff3366] font-bold';
+          countSpan.textContent = `${item.count} blk`;
+          row.appendChild(identSpan);
+          row.appendChild(countSpan);
+          topList.appendChild(row);
+        });
+      }
+    }
+
+    // Toggle Master Shield
+    async function toggleShield() {
+      activeConfig.shield_enabled = !activeConfig.shield_enabled;
+      renderShieldButton();
+      await syncConfig();
+    }
+
+    function renderShieldButton() {
+      const btn = document.getElementById('btn-toggle-shield');
+      const badge = document.getElementById('badge-shield-status');
+      if (activeConfig.shield_enabled) {
+        btn.innerText = 'SHIELD ACTIVE';
+        btn.className = 'w-full py-3 rounded-lg font-black tracking-widest text-sm transition uppercase bg-emerald-950 text-[#00ff88] border border-[#00ff88] neon-border-green';
+        badge.innerText = 'ARMED';
+        badge.className = 'px-2.5 py-0.5 rounded text-xs font-bold uppercase bg-emerald-950 text-[#00ff88] border border-emerald-800';
+      } else {
+        btn.innerText = 'SHIELD DISABLED (DANGER)';
+        btn.className = 'w-full py-3 rounded-lg font-black tracking-widest text-sm transition uppercase bg-red-950 text-[#ff3366] border border-[#ff3366] neon-border-red';
+        badge.innerText = 'OFFLINE';
+        badge.className = 'px-2.5 py-0.5 rounded text-xs font-bold uppercase bg-red-950 text-[#ff3366] border border-red-800 animate-pulse';
+      }
+    }
+
+    function onSliderChange(param, value, labelId) {
+      document.getElementById(labelId).innerText = value;
+      activeConfig[param] = parseFloat(value);
+      if (param === 'max_upstream_rps') {
+        document.getElementById('stat-cap-val').innerText = `${value} RPS`;
+      }
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => syncConfig(), 150);
+    }
+
+    function updateDefenseParam(param, value) {
+      activeConfig[param] = value;
+      syncConfig();
+    }
+
+    async function syncConfig() {
+      try {
+        await fetch('/control/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(activeConfig)
+        });
+      } catch (err) {
+        console.error("Config update failed", err);
+      }
+    }
+
+    async function startSim(pattern) {
+      try {
+        await fetch(`/control/simulate/${pattern}`, { method: 'POST' });
+      } catch (err) {
+        console.error("Simulation trigger failed", err);
+      }
+    }
+
+    async function stopSim() {
+      try {
+        await fetch('/control/simulate/stop', { method: 'POST' });
+      } catch (err) {
+        console.error("Simulation stop failed", err);
+      }
+    }
+
+    // Startup Init
+    window.addEventListener('DOMContentLoaded', async () => {
+      initChart();
+      connectTelemetryWebSocket();
+      try {
+        const res = await fetch('/control/state');
+        const state = await res.json();
+        if (state.config) {
+          activeConfig = { ...activeConfig, ...state.config };
+          renderShieldButton();
+          document.getElementById('sel-algo').value = activeConfig.algorithm;
+          document.getElementById('slider-capacity').value = activeConfig.base_capacity;
+          document.getElementById('lbl-capacity').innerText = activeConfig.base_capacity;
+          document.getElementById('slider-refill').value = activeConfig.base_refill_rate;
+          document.getElementById('lbl-refill').innerText = activeConfig.base_refill_rate;
+          document.getElementById('slider-cap').value = activeConfig.max_upstream_rps;
+          document.getElementById('lbl-cap').innerText = activeConfig.max_upstream_rps;
+          document.getElementById('chk-degradation').checked = activeConfig.degradation_mode;
+          document.getElementById('chk-storm').checked = activeConfig.storm_mode_enabled;
+        }
+      } catch (err) {
+        console.warn("Could not prefetch control state", err);
+      }
+    });
+  </script>
+</body>
+</html>
