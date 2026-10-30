@@ -137,6 +137,60 @@ async def health_check():
     }
 
 
+# -------------------------------------------------------------
+# DEFENSIVE TEST & CLOUD INTEGRATION ENDPOINTS
+# -------------------------------------------------------------
+
+@app.get("/api/controlled-error")
+async def trigger_controlled_error(request: Request):
+    """
+    Controlled unexpected error trigger for test T06.
+    Simulates a controlled internal component failure.
+    Demonstrates:
+    - Safe response (no stack trace, credentials, or internals leaked)
+    - Structured security event recorded in Google Cloud Logging format
+    - Correlation ID returned for forensic tracing
+    """
+    corr_id = request.scope.get("correlation_id", f"corr-{secrets.token_hex(8)}")
+    from cloud.cloud_logging import structured_security_logger
+    structured_security_logger.emit_event(
+        event_type="UNEXPECTED_ERROR",
+        severity="ERROR",
+        message="Controlled unexpected component failure invoked for security test T06",
+        correlation_id=corr_id,
+        path="/api/controlled-error",
+        method="GET",
+        status_code=500,
+        outcome="handled_error",
+        details={"test_case": "T06_controlled_unexpected_error"}
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "message": "A controlled unexpected error occurred and was safely handled. Incident recorded.",
+            "correlation_id": corr_id
+        }
+    )
+
+
+@app.get("/control/cloud/monitoring")
+async def get_cloud_monitoring_status():
+    """Return Google Cloud Monitoring custom metric descriptors and accumulated counters."""
+    from cloud.cloud_monitoring import monitoring_adapter
+    return monitoring_adapter.get_current_metrics_snapshot()
+
+
+@app.get("/control/cloud/logs")
+async def get_cloud_audit_logs(limit: int = 50, event_type: Optional[str] = None):
+    """Return recent structured security logs formatted for Google Cloud Logging."""
+    from cloud.cloud_logging import structured_security_logger
+    return {
+        "count": len(structured_security_logger.buffer),
+        "events": structured_security_logger.get_recent_events(limit=limit, event_type=event_type)
+    }
+
+
 # Static Dashboard Serving
 os.makedirs("static", exist_ok=True)
 

@@ -2,6 +2,7 @@
 Pure ASGI Shield Middleware.
 Handles:
 - Per-Session sandbox resolution (from X-Session-Id header or storm_session cookie)
+- Request / Correlation ID generation & propagation (X-Correlation-Id)
 - Exempt path bypassing
 - Client identity resolution (API Key registry fallback to IP, namespaced by session)
 - Adaptive Storm Gate & Global upstream admission cap (per session)
@@ -9,7 +10,8 @@ Handles:
 - Queue shaper awaiting
 - Graceful degradation (Stale-While-Revalidate per session)
 - De facto and RFC 9110 rate limit headers
-- Telemetry & status code latency / request log recording (per session)
+- Structured security logging (Google Cloud Logging format) & Telemetry recording
+- Safe controlled exception handling (no stack trace or credential leakage)
 - Cookie injection for new/refreshed sessions
 """
 
@@ -18,6 +20,7 @@ import time
 import math
 import random
 import json
+import secrets
 import asyncio
 from typing import Dict, Any, Optional, Tuple, Callable
 from starlette.types import ASGIApp, Scope, Receive, Send
@@ -33,6 +36,9 @@ from config import (
 from storage.base import BaseStorage
 from limiters.base import RateLimiterStrategy, Decision
 from session_manager import SESSION_MANAGER, SessionState
+from cloud.cloud_logging import structured_security_logger
+from cloud.cloud_monitoring import monitoring_adapter
+from metrics import mask_identity
 
 
 class ShieldMiddleware:
@@ -72,7 +78,7 @@ class ShieldMiddleware:
         # Check if trusted proxy or Vercel environment
         is_vercel = os.getenv("VERCEL") == "1"
         is_local = (
-            socket_ip in ("127.0.0.1", "::1", "localhost")
+            socket_ip in ("127.0.0.1", "::1", "localhost", "testclient")
             or socket_ip.startswith("10.")
             or socket_ip.startswith("192.168.")
             or socket_ip.startswith("172.")
@@ -122,6 +128,12 @@ class ShieldMiddleware:
             except Exception:
                 pass
 
+        # Resolve or generate correlation / request ID
+        correlation_id = headers.get("x-correlation-id") or headers.get("x-request-id")
+        if not correlation_id:
+            correlation_id = f"corr-{secrets.token_hex(8)}"
+        scope["correlation_id"] = correlation_id
+
         sim_class = headers.get("x-sim-class", "none")
         client_ip = self._extract_client_ip(scope, headers)
         requested_sid = self._extract_session_id(headers)
@@ -157,10 +169,25 @@ class ShieldMiddleware:
                     if cookie_to_set:
                         raw_hdrs.append((b"set-cookie", cookie_to_set))
                     raw_hdrs.append((b"x-session-id", session_state.session_id.encode("latin1")))
+                    raw_hdrs.append((b"x-correlation-id", correlation_id.encode("latin1")))
                     message["headers"] = raw_hdrs
                 await send(message)
 
-            await self.app(scope, receive, _exempt_send)
+            try:
+                await self.app(scope, receive, _exempt_send)
+            except Exception as exc:
+                await self._handle_unexpected_exception(
+                    send=send,
+                    exc=exc,
+                    correlation_id=correlation_id,
+                    session_id=session_state.session_id,
+                    client_ip=client_ip,
+                    raw_identity="exempt",
+                    tier="SYSTEM",
+                    method=method,
+                    path=path,
+                    req_start_time=req_start_time
+                )
             return
 
         # 2. Extract Identity & Tier
@@ -181,6 +208,7 @@ class ShieldMiddleware:
                     if cookie_to_set:
                         raw_hdrs.append((b"set-cookie", cookie_to_set))
                     raw_hdrs.append((b"x-session-id", session_state.session_id.encode("latin1")))
+                    raw_hdrs.append((b"x-correlation-id", correlation_id.encode("latin1")))
                     message["headers"] = raw_hdrs
 
                     resp_h_map = {k.decode("latin1"): v.decode("latin1") for k, v in raw_hdrs}
@@ -199,9 +227,41 @@ class ShieldMiddleware:
                         retry_after_s=0,
                         response_headers=resp_h_map
                     )
+
+                    structured_security_logger.emit_event(
+                        event_type="UNSHIELDED_REQUEST",
+                        severity="INFO",
+                        message=f"Request processed unshielded: {method} {path}",
+                        correlation_id=correlation_id,
+                        session_id=session_state.session_id,
+                        client_ip_masked=mask_identity(client_ip),
+                        identity_masked=mask_identity(raw_identity, tier),
+                        method=method,
+                        path=path,
+                        status_code=status_code,
+                        outcome="accepted" if status_code < 400 else "blocked",
+                        latency_ms=latency_ms,
+                        details={"reason": "shield_disabled"}
+                    )
+                    monitoring_adapter.record_decision("accepted" if status_code < 400 else "blocked", latency_ms)
+
                 await send(message)
 
-            await self.app(scope, receive, _send_unshielded)
+            try:
+                await self.app(scope, receive, _send_unshielded)
+            except Exception as exc:
+                await self._handle_unexpected_exception(
+                    send=send,
+                    exc=exc,
+                    correlation_id=correlation_id,
+                    session_id=session_state.session_id,
+                    client_ip=client_ip,
+                    raw_identity=raw_identity,
+                    tier=tier,
+                    method=method,
+                    path=path,
+                    req_start_time=req_start_time
+                )
             return
 
         # 4. Storm Detection check (isolated per session)
@@ -245,7 +305,9 @@ class ShieldMiddleware:
                     ),
                     req_start_time=req_start_time,
                     session_state=session_state,
-                    cookie_to_set=cookie_to_set
+                    cookie_to_set=cookie_to_set,
+                    correlation_id=correlation_id,
+                    client_ip=client_ip
                 )
                 return
 
@@ -299,7 +361,9 @@ class ShieldMiddleware:
                 reason_metric=reason_metric,
                 req_start_time=req_start_time,
                 session_state=session_state,
-                cookie_to_set=cookie_to_set
+                cookie_to_set=cookie_to_set,
+                correlation_id=correlation_id,
+                client_ip=client_ip
             )
         else:
             await self._handle_throttle(
@@ -315,7 +379,9 @@ class ShieldMiddleware:
                 decision=decision,
                 req_start_time=req_start_time,
                 session_state=session_state,
-                cookie_to_set=cookie_to_set
+                cookie_to_set=cookie_to_set,
+                correlation_id=correlation_id,
+                client_ip=client_ip
             )
 
     async def _forward_and_respond(
@@ -334,7 +400,9 @@ class ShieldMiddleware:
         reason_metric: str,
         req_start_time: float,
         session_state: SessionState,
-        cookie_to_set: Optional[bytes]
+        cookie_to_set: Optional[bytes],
+        correlation_id: str,
+        client_ip: str
     ) -> None:
         """
         Forward request to upstream app, add rate limit headers, and capture read responses for session cache.
@@ -360,6 +428,7 @@ class ShieldMiddleware:
                 raw_hdrs.append((b"x-ratelimit-remaining", rem_hdr))
                 raw_hdrs.append((b"x-ratelimit-reset", reset_hdr))
                 raw_hdrs.append((b"x-session-id", session_state.session_id.encode("latin1")))
+                raw_hdrs.append((b"x-correlation-id", correlation_id.encode("latin1")))
                 if cookie_to_set:
                     raw_hdrs.append((b"set-cookie", cookie_to_set))
 
@@ -384,6 +453,30 @@ class ShieldMiddleware:
                     response_headers=captured_headers
                 )
 
+                # Structured event logging
+                event_type = "REQUEST_ACCEPTED" if status_metric == "accepted" else ("REQUEST_QUEUED" if status_metric == "queued" else "REQUEST_PROCESSED")
+                structured_security_logger.emit_event(
+                    event_type=event_type,
+                    severity="INFO",
+                    message=f"Request permitted by rate limiter ({reason_metric})",
+                    correlation_id=correlation_id,
+                    session_id=session_state.session_id,
+                    client_ip_masked=mask_identity(client_ip),
+                    identity_masked=mask_identity(identity, tier),
+                    method=method,
+                    path=path,
+                    status_code=captured_status,
+                    outcome=status_metric,
+                    latency_ms=latency_ms,
+                    details={
+                        "cost": endpoint_cost,
+                        "tier": tier,
+                        "limit": int(decision.limit),
+                        "remaining": max(0, int(decision.remaining))
+                    }
+                )
+                monitoring_adapter.record_decision(status_metric, latency_ms, is_storm_mode=False)
+
             elif message["type"] == "http.response.body" and is_cacheable:
                 body_chunk = message.get("body", b"")
                 if body_chunk:
@@ -391,7 +484,22 @@ class ShieldMiddleware:
 
             await send(message)
 
-        await self.app(scope, receive, _intercept_send)
+        try:
+            await self.app(scope, receive, _intercept_send)
+        except Exception as exc:
+            await self._handle_unexpected_exception(
+                send=send,
+                exc=exc,
+                correlation_id=correlation_id,
+                session_id=session_state.session_id,
+                client_ip=client_ip,
+                raw_identity=identity,
+                tier=tier,
+                method=method,
+                path=path,
+                req_start_time=req_start_time
+            )
+            return
 
         # Populate session cache if read endpoint was successful
         if is_cacheable and captured_status == 200:
@@ -420,7 +528,9 @@ class ShieldMiddleware:
         decision: Decision,
         req_start_time: float,
         session_state: SessionState,
-        cookie_to_set: Optional[bytes]
+        cookie_to_set: Optional[bytes],
+        correlation_id: str,
+        client_ip: str
     ) -> None:
         """
         Handle throttled requests:
@@ -452,6 +562,7 @@ class ShieldMiddleware:
                     (b"x-ratelimit-remaining", b"0"),
                     (b"x-ratelimit-reset", str(max(1, int(math.ceil(decision.reset_after_ms / 1000.0)))).encode("latin1")),
                     (b"x-session-id", session_state.session_id.encode("latin1")),
+                    (b"x-correlation-id", correlation_id.encode("latin1")),
                 ]
                 if cookie_to_set:
                     response_headers.append((b"set-cookie", cookie_to_set))
@@ -472,6 +583,23 @@ class ShieldMiddleware:
                     retry_after_s=0,
                     response_headers=header_map
                 )
+
+                structured_security_logger.emit_event(
+                    event_type="DEGRADED_SERVED",
+                    severity="INFO",
+                    message="Graceful degradation: stale-while-revalidate cached read returned",
+                    correlation_id=correlation_id,
+                    session_id=session_state.session_id,
+                    client_ip_masked=mask_identity(client_ip),
+                    identity_masked=mask_identity(identity, tier),
+                    method=method,
+                    path=path,
+                    status_code=200,
+                    outcome="degraded",
+                    latency_ms=latency_ms,
+                    details={"age": entry.age, "tier": tier}
+                )
+                monitoring_adapter.record_decision("degraded", latency_ms, is_storm_mode=session_state.metrics._storm_mode_active)
 
                 await send({
                     "type": "http.response.start",
@@ -499,7 +627,8 @@ class ShieldMiddleware:
             "reason": decision.reason,
             "retry_after_seconds": retry_after_int,
             "degraded_mode": "Cache-Miss" if is_read_cacheable else "Disabled",
-            "session_id": session_state.session_id
+            "session_id": session_state.session_id,
+            "correlation_id": correlation_id
         }).encode("utf-8")
 
         headers_429 = [
@@ -509,6 +638,7 @@ class ShieldMiddleware:
             (b"x-ratelimit-remaining", b"0"),
             (b"x-ratelimit-reset", str(reset_sec).encode("latin1")),
             (b"x-session-id", session_state.session_id.encode("latin1")),
+            (b"x-correlation-id", correlation_id.encode("latin1")),
         ]
         if cookie_to_set:
             headers_429.append((b"set-cookie", cookie_to_set))
@@ -532,6 +662,28 @@ class ShieldMiddleware:
             response_headers=header_map_429
         )
 
+        structured_security_logger.emit_event(
+            event_type="RATE_LIMIT_BLOCKED",
+            severity="WARNING",
+            message=f"Request rate-limited: {decision.reason}",
+            correlation_id=correlation_id,
+            session_id=session_state.session_id,
+            client_ip_masked=mask_identity(client_ip),
+            identity_masked=mask_identity(identity, tier),
+            method=method,
+            path=path,
+            status_code=429,
+            outcome="blocked",
+            latency_ms=latency_ms,
+            details={
+                "tier": tier,
+                "reason": decision.reason,
+                "retry_after_s": retry_after_int,
+                "limit": int(decision.limit)
+            }
+        )
+        monitoring_adapter.record_decision("blocked", latency_ms, is_storm_mode=session_state.metrics._storm_mode_active)
+
         await send({
             "type": "http.response.start",
             "status": 429,
@@ -540,5 +692,60 @@ class ShieldMiddleware:
         await send({
             "type": "http.response.body",
             "body": resp_body,
+            "more_body": False
+        })
+
+    async def _handle_unexpected_exception(
+        self,
+        send: Send,
+        exc: Exception,
+        correlation_id: str,
+        session_id: str,
+        client_ip: str,
+        raw_identity: str,
+        tier: str,
+        method: str,
+        path: str,
+        req_start_time: float
+    ) -> None:
+        """
+        Handle unexpected exceptions safely without exposing internal stack traces,
+        credentials, or system internals (satisfies T06).
+        """
+        latency_ms = (time.time() - req_start_time) * 1000.0
+        structured_security_logger.emit_event(
+            event_type="UNEXPECTED_ERROR",
+            severity="ERROR",
+            message="Internal exception handled safely",
+            correlation_id=correlation_id,
+            session_id=session_id,
+            client_ip_masked=mask_identity(client_ip),
+            identity_masked=mask_identity(raw_identity, tier),
+            method=method,
+            path=path,
+            status_code=500,
+            outcome="handled_error",
+            latency_ms=latency_ms,
+            details={"error_class": exc.__class__.__name__}
+        )
+
+        safe_body = json.dumps({
+            "error": "Internal Server Error",
+            "message": "A controlled unexpected error occurred and was safely handled. Incident recorded.",
+            "correlation_id": correlation_id
+        }).encode("utf-8")
+
+        await send({
+            "type": "http.response.start",
+            "status": 500,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"x-correlation-id", correlation_id.encode("latin1")),
+                (b"x-session-id", session_id.encode("latin1")),
+            ]
+        })
+        await send({
+            "type": "http.response.body",
+            "body": safe_body,
             "more_body": False
         })

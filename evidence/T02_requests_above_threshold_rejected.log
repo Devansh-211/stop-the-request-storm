@@ -1,0 +1,12 @@
+=== EVIDENCE T02: REQUESTS ABOVE THRESHOLD REJECTED CONSISTENTLY ===
+Timestamp: 2026-10-30 17:38:09Z
+Configuration: /api/heavy-compute (cost=5 tokens), capacity=10 tokens
+------------------------------------------------------------
+Request 01: Status 200 | Remaining: 5 | Retry-After: Nones | Correlation-ID: corr-79f0e99b1fb5f2ca
+Request 02: Status 200 | Remaining: 0 | Retry-After: Nones | Correlation-ID: corr-7768fde1b108e58e
+Request 03: Status 429 | Remaining: 0 | Retry-After: 6s | Correlation-ID: corr-04b0258137b778d8
+Request 04: Status 429 | Remaining: 0 | Retry-After: 6s | Correlation-ID: corr-0034f80d58c7547a
+Request 05: Status 429 | Remaining: 0 | Retry-After: 6s | Correlation-ID: corr-9c5020a4ee1507b4
+------------------------------------------------------------
+Observed Outcome: First 2 requests succeed (consuming 10 tokens); subsequent calls strictly rejected with HTTP 429 Too Many Requests and integer Retry-After header.
+Status: PASS

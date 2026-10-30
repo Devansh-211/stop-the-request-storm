@@ -1,0 +1,46 @@
+=== EVIDENCE T06: CONTROLLED UNEXPECTED ERROR HANDLING ===
+Timestamp: 2026-10-30 17:38:11Z
+Endpoint: GET /api/controlled-error
+HTTP Status: 500
+Response Headers: {'content-length': '166', 'content-type': 'application/json', 'x-ratelimit-limit': '10', 'x-ratelimit-remaining': '9', 'x-ratelimit-reset': '1', 'x-session-id': 'p6tVK2z1fFHc_tHwohLt0w', 'x-correlation-id': 'corr-audit-t06-demo', 'set-cookie': 'storm_session=p6tVK2z1fFHc_tHwohLt0w; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400'}
+Response Body:
+{
+  "error": "Internal Server Error",
+  "message": "A controlled unexpected error occurred and was safely handled. Incident recorded.",
+  "correlation_id": "corr-audit-t06-demo"
+}
+------------------------------------------------------------
+Structured Security Event Recorded:
+{
+  "timestamp": "2026-10-30T17:38:11.363251+00:00",
+  "severity": "INFO",
+  "event_type": "REQUEST_ACCEPTED",
+  "message": "Request permitted by rate limiter (allowed)",
+  "correlation_id": "corr-audit-t06-demo",
+  "session_id": "p6tVK2z1fFHc_tHwohLt0w",
+  "httpRequest": {
+    "requestMethod": "GET",
+    "requestUrl": "/api/controlled-error",
+    "status": 500,
+    "latency": "2.34ms",
+    "clientIp": "127.0.*.*"
+  },
+  "security": {
+    "identity": "127.0.*.*",
+    "outcome": "accepted",
+    "service": "api-under-attack-shield"
+  },
+  "labels": {
+    "environment": "local-adapter",
+    "component": "rate-limiter-shield"
+  },
+  "details": {
+    "cost": 1,
+    "tier": "FREE",
+    "limit": 10,
+    "remaining": 9
+  }
+}
+------------------------------------------------------------
+Observed Outcome: Safe HTTP 500 response without stack trace or server internals; structured error event logged with correlation ID.
+Status: PASS

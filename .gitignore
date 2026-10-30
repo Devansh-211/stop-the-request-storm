@@ -7,5 +7,6 @@ __pycache__/
 env/
 venv/
 *.log
+!evidence/*.log
 .DS_Store
 .system_generated/

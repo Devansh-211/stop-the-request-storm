@@ -1,0 +1,30 @@
+=== BASELINE ASSESSMENT: SHIELD DISABLED (PRE-REMEDIATION) ===
+Timestamp: 2026-10-30 17:38:08Z
+Session Sandbox: HZkrXQCpf11GSoBJQbvTrA
+Test Scenario: Rapid unshielded request storm to simulated upstream API
+Input Event: 20 rapid GET requests to /api/ping from unauthenticated client
+------------------------------------------------------------
+Request 01: Status 200 | Upstream Latency 20ms
+Request 02: Status 200 | Upstream Latency 20ms
+Request 03: Status 200 | Upstream Latency 20ms
+Request 04: Status 200 | Upstream Latency 20ms
+Request 05: Status 200 | Upstream Latency 20ms
+Request 06: Status 200 | Upstream Latency 20ms
+Request 07: Status 200 | Upstream Latency 20ms
+Request 08: Status 200 | Upstream Latency 20ms
+Request 09: Status 200 | Upstream Latency 20ms
+Request 10: Status 200 | Upstream Latency 20ms
+Request 11: Status 200 | Upstream Latency 20ms
+Request 12: Status 200 | Upstream Latency 20ms
+Request 13: Status 200 | Upstream Latency 20ms
+Request 14: Status 200 | Upstream Latency 20ms
+Request 15: Status 200 | Upstream Latency 20ms
+Request 16: Status 200 | Upstream Latency 20ms
+Request 17: Status 200 | Upstream Latency 20ms
+Request 18: Status 200 | Upstream Latency 20ms
+Request 19: Status 200 | Upstream Latency 20ms
+Request 20: Status 200 | Upstream Latency 20ms
+------------------------------------------------------------
+Observed Result: All 20 requests accepted with 0 rate limiting or admission controls.
+Identified Risk: Susceptible to application-layer denial of service (DoS), server exhaustion, and cascading downstream outages.
+Remediation Requirement: Implement application-level token-bucket/sliding-window limiter, request rejection with Retry-After, and structured security logging.

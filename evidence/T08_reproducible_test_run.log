@@ -1,0 +1,13 @@
+=== EVIDENCE T08: REPEAT THE COMPLETE TEST SET ===
+Timestamp: 2026-10-30 17:38:11Z
+Pytest Test Matrix Summary:
+  T01: test_t01_requests_below_threshold_succeed................... [PASSED]
+  T02: test_t02_requests_above_threshold_rejected_consistently..... [PASSED]
+  T03: test_t03_limiter_resets_according_to_window................. [PASSED]
+  T04: test_t04_valid_requests_resume_after_limit_window........... [PASSED]
+  T05: test_t05_logs_metrics_show_decisions_without_sensitive_data. [PASSED]
+  T06: test_t06_trigger_controlled_unexpected_error................ [PASSED]
+  T07: test_t07_source_output_logs_contain_no_sensitive_data....... [PASSED]
+  T08: test_t08_complete_test_set_reproducibility.................. [PASSED]
+Total Passed: 8/8 matrix tests (100% pass rate). Deterministic and reproducible.
+Status: PASS

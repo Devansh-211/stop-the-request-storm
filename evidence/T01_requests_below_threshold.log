@@ -1,0 +1,12 @@
+=== EVIDENCE T01: REQUESTS BELOW THRESHOLD SUCCEED ===
+Timestamp: 2026-10-30 17:38:09Z
+Configuration: base_capacity=10.0, refill_rate=1.0 token/s, cost=1 per /api/ping
+------------------------------------------------------------
+Request 01: Status 200 | Limit: 10 | Remaining: 9 | Reset: 1s | Correlation-ID: corr-001e69644087f1b1
+Request 02: Status 200 | Limit: 10 | Remaining: 8 | Reset: 2s | Correlation-ID: corr-9f054f8d491f37d5
+Request 03: Status 200 | Limit: 10 | Remaining: 7 | Reset: 3s | Correlation-ID: corr-1d7b16d4ff94fe7d
+Request 04: Status 200 | Limit: 10 | Remaining: 6 | Reset: 4s | Correlation-ID: corr-2751fe4a92b1c151
+Request 05: Status 200 | Limit: 10 | Remaining: 5 | Reset: 5s | Correlation-ID: corr-69e63db8480090f1
+------------------------------------------------------------
+Observed Outcome: All requests accepted (HTTP 200). Remaining quota accurately decremented.
+Status: PASS

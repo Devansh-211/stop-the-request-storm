@@ -1,0 +1,7 @@
+=== EVIDENCE T04: VALID REQUESTS RESUME AFTER LIMIT WINDOW ===
+Timestamp: 2026-10-30 17:38:11Z
+Status check post-cooldown: HTTP 200
+Response Body: {'status': 'pong', 'service': 'core-upstream-api', 'upstream_mode': 'mock', 'latency_ms': 20}
+Correlation ID: corr-c7513986d24bd067
+Observed Outcome: Normal client operation resumes seamlessly once the rate limit cooldown concludes.
+Status: PASS

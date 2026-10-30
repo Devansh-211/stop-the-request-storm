@@ -1,0 +1,8 @@
+=== EVIDENCE T03: LIMITER RESETS ACCORDING TO WINDOW ===
+Timestamp: 2026-10-30 17:38:10Z
+Configuration: base_capacity=4.0, base_refill_rate=4.0 tokens/s
+State at t=0.00s: Status 429 (Capacity Exhausted)
+Waiting 1.05s for continuous token replenishment...
+State at t=1.05s: Status 200 | Remaining 3
+Observed Outcome: Tokens refilled according to documented rate formula (refill_rate * elapsed_time).
+Status: PASS

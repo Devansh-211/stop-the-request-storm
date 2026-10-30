@@ -1,0 +1,165 @@
+=== EVIDENCE T05: USEFUL EVENTS APPEAR WITHOUT SENSITIVE PAYLOADS ===
+Timestamp: 2026-10-30 17:38:11Z
+Google Cloud Logging Structured Security Entries (Excerpt):
+------------------------------------------------------------
+{
+  "timestamp": "2026-10-30T17:38:11.341065+00:00",
+  "severity": "INFO",
+  "event_type": "REQUEST_ACCEPTED",
+  "message": "Request permitted by rate limiter (allowed)",
+  "correlation_id": "corr-c7513986d24bd067",
+  "session_id": "HZkrXQCpf11GSoBJQbvTrA",
+  "httpRequest": {
+    "requestMethod": "GET",
+    "requestUrl": "/api/ping",
+    "status": 200,
+    "latency": "30.84ms",
+    "clientIp": "198.51.*.*"
+  },
+  "security": {
+    "identity": "198.51.*.*",
+    "outcome": "accepted",
+    "service": "api-under-attack-shield"
+  },
+  "labels": {
+    "environment": "local-adapter",
+    "component": "rate-limiter-shield"
+  },
+  "details": {
+    "cost": 1,
+    "tier": "FREE",
+    "limit": 4,
+    "remaining": 3
+  }
+}
+---
+{
+  "timestamp": "2026-10-30T17:38:10.244218+00:00",
+  "severity": "WARNING",
+  "event_type": "RATE_LIMIT_BLOCKED",
+  "message": "Request rate-limited: TOKEN_BUCKET_EXHAUSTED",
+  "correlation_id": "corr-05e1e61c16f2c89a",
+  "session_id": "HZkrXQCpf11GSoBJQbvTrA",
+  "httpRequest": {
+    "requestMethod": "GET",
+    "requestUrl": "/api/ping",
+    "status": 429,
+    "latency": "0.19ms",
+    "clientIp": "198.51.*.*"
+  },
+  "security": {
+    "identity": "198.51.*.*",
+    "outcome": "blocked",
+    "service": "api-under-attack-shield"
+  },
+  "labels": {
+    "environment": "local-adapter",
+    "component": "rate-limiter-shield"
+  },
+  "details": {
+    "tier": "FREE",
+    "reason": "TOKEN_BUCKET_EXHAUSTED",
+    "retry_after_s": 2,
+    "limit": 4
+  }
+}
+---
+{
+  "timestamp": "2026-10-30T17:38:10.240521+00:00",
+  "severity": "INFO",
+  "event_type": "REQUEST_ACCEPTED",
+  "message": "Request permitted by rate limiter (allowed)",
+  "correlation_id": "corr-4eb4ba9121bb3813",
+  "session_id": "HZkrXQCpf11GSoBJQbvTrA",
+  "httpRequest": {
+    "requestMethod": "GET",
+    "requestUrl": "/api/ping",
+    "status": 200,
+    "latency": "25.44ms",
+    "clientIp": "198.51.*.*"
+  },
+  "security": {
+    "identity": "198.51.*.*",
+    "outcome": "accepted",
+    "service": "api-under-attack-shield"
+  },
+  "labels": {
+    "environment": "local-adapter",
+    "component": "rate-limiter-shield"
+  },
+  "details": {
+    "cost": 1,
+    "tier": "FREE",
+    "limit": 4,
+    "remaining": 0
+  }
+}
+---
+{
+  "timestamp": "2026-10-30T17:38:10.212754+00:00",
+  "severity": "INFO",
+  "event_type": "REQUEST_ACCEPTED",
+  "message": "Request permitted by rate limiter (allowed)",
+  "correlation_id": "corr-7401b2352ac712cc",
+  "session_id": "HZkrXQCpf11GSoBJQbvTrA",
+  "httpRequest": {
+    "requestMethod": "GET",
+    "requestUrl": "/api/ping",
+    "status": 200,
+    "latency": "26.67ms",
+    "clientIp": "198.51.*.*"
+  },
+  "security": {
+    "identity": "198.51.*.*",
+    "outcome": "accepted",
+    "service": "api-under-attack-shield"
+  },
+  "labels": {
+    "environment": "local-adapter",
+    "component": "rate-limiter-shield"
+  },
+  "details": {
+    "cost": 1,
+    "tier": "FREE",
+    "limit": 4,
+    "remaining": 1
+  }
+}
+---
+{
+  "timestamp": "2026-10-30T17:38:10.183675+00:00",
+  "severity": "INFO",
+  "event_type": "REQUEST_ACCEPTED",
+  "message": "Request permitted by rate limiter (allowed)",
+  "correlation_id": "corr-bbf0a817276651a0",
+  "session_id": "HZkrXQCpf11GSoBJQbvTrA",
+  "httpRequest": {
+    "requestMethod": "GET",
+    "requestUrl": "/api/ping",
+    "status": 200,
+    "latency": "24.33ms",
+    "clientIp": "198.51.*.*"
+  },
+  "security": {
+    "identity": "198.51.*.*",
+    "outcome": "accepted",
+    "service": "api-under-attack-shield"
+  },
+  "labels": {
+    "environment": "local-adapter",
+    "component": "rate-limiter-shield"
+  },
+  "details": {
+    "cost": 1,
+    "tier": "FREE",
+    "limit": 4,
+    "remaining": 2
+  }
+}
+---
+------------------------------------------------------------
+Privacy & Sanitization Verification:
+- IPv4 addresses masked to first 2 octets (e.g. 198.51.*.*)
+- API keys masked to tier labels (e.g. API_KEY [PRO]), zero raw secrets
+- No passwords, tokens, or personal records stored
+Status: PASS
